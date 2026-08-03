@@ -1,0 +1,52 @@
+[
+  {
+    "account_id": "ACC-2001",
+    "plan_tier": "pro",
+    "status": "active",
+    "signup_date": "2025-11-14T09:31:00Z",
+    "open_ticket_count": 4,
+    "refund_window_status": "inside",
+    "refund_window_ends": "2026-08-28T23:59:59Z",
+    "known_issues": []
+  },
+  {
+    "account_id": "ACC-2002",
+    "plan_tier": "pro",
+    "status": "active",
+    "signup_date": "2024-03-02T16:04:00Z",
+    "open_ticket_count": 1,
+    "refund_window_status": "outside",
+    "refund_window_ends": "2026-06-15T23:59:59Z",
+    "known_issues": []
+  },
+  {
+    "account_id": "ACC-2003",
+    "plan_tier": "free",
+    "status": "active",
+    "signup_date": "2026-05-21T11:47:00Z",
+    "open_ticket_count": 1,
+    "refund_window_status": "not_applicable",
+    "refund_window_ends": null,
+    "known_issues": []
+  },
+  {
+    "account_id": "ACC-2004",
+    "plan_tier": "business",
+    "status": "active",
+    "signup_date": "2023-09-08T08:12:00Z",
+    "open_ticket_count": 2,
+    "refund_window_status": "not_applicable",
+    "refund_window_ends": null,
+    "known_issues": ["duplicate_charge:CHG-88213"]
+  },
+  {
+    "account_id": "ACC-2005",
+    "plan_tier": "starter",
+    "status": "active",
+    "signup_date": "2026-07-19T13:55:00Z",
+    "open_ticket_count": 1,
+    "refund_window_status": "inside",
+    "refund_window_ends": "2026-08-18T23:59:59Z",
+    "known_issues": []
+  }
+]

@@ -507,8 +507,8 @@ Updated at every phase boundary. A fresh session reads this first to learn where
 | Phase | Scope | Acceptance | Status |
 |---|---|---|---|
 | 0 | Verification, docs pull, scaffolding | `docs/reference/` populated, toolchain green | ✅ **Closed 2026-08-02** — 12 reference pages; pnpm workspace; TS 7.0.2 strict passing; `pnpm -s test` exit 0 |
-| 1 | MCP server standalone | Deployed server answers tools-list and both tools over HTTPS, token required, clean not-found path | ⏳ **Next** |
-| 2 | Hello world on the runtime | A session runs end to end against the real account and streams events back | ⬜ |
+| 1 | MCP server standalone | Deployed server answers tools-list and both tools over HTTPS, token required, clean not-found path | ✅ **Closed 2026-08-03** — live at `https://mcp-server-alpha-snowy.vercel.app/mcp`; all six checks pass over HTTPS; 32 tests green |
+| 2 | Hello world on the runtime | A session runs end to end against the real account and streams events back | ⏳ **Next** |
 | 3 | The SSE consumer | Consumer survives a full session incl. one tool call, prints a readable trace, unknown event types do not crash it | ⬜ |
 | 4 | Triage core plus the skill | All ten tickets process. T-006 escalates. T-008 refused and escalated. T-009 fails gracefully | ⬜ |
 | 5 | Memory | Memory written in session A provably read and referenced in session B, proven in the trace | ⬜ |

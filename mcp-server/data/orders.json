@@ -1,0 +1,46 @@
+{
+  "ACC-2001": [
+    {
+      "order_id": "ORD-4101",
+      "account_id": "ACC-2001",
+      "status": "delivered",
+      "amount_usd": 149.0,
+      "placed_at": "2026-07-28T10:14:00Z"
+    }
+  ],
+  "ACC-2002": [
+    {
+      "order_id": "ORD-4201",
+      "account_id": "ACC-2002",
+      "status": "delivered",
+      "amount_usd": 89.0,
+      "placed_at": "2026-06-01T15:38:00Z"
+    }
+  ],
+  "ACC-2003": [],
+  "ACC-2004": [
+    {
+      "order_id": "ORD-88213-A",
+      "account_id": "ACC-2004",
+      "status": "delivered",
+      "amount_usd": 499.0,
+      "placed_at": "2026-07-30T14:22:07Z"
+    },
+    {
+      "order_id": "ORD-88213-B",
+      "account_id": "ACC-2004",
+      "status": "delivered",
+      "amount_usd": 499.0,
+      "placed_at": "2026-07-30T14:22:41Z"
+    }
+  ],
+  "ACC-2005": [
+    {
+      "order_id": "ORD-4501",
+      "account_id": "ACC-2005",
+      "status": "failed",
+      "amount_usd": 64.0,
+      "placed_at": "2026-07-31T18:03:00Z"
+    }
+  ]
+}

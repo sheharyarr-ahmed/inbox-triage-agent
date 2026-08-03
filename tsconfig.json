@@ -14,5 +14,11 @@
 
     "noEmit": true
   },
-  "include": ["src", "tests", "mcp-server/src", "vitest.config.ts"]
+  "include": [
+    "src",
+    "tests",
+    "mcp-server/src",
+    "mcp-server/api",
+    "vitest.config.ts"
+  ]
 }
