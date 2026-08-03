@@ -1,0 +1,24 @@
+# Sandbox configuration. Applied by scripts/apply-control-plane.sh via the
+# `ant` CLI — control plane through the CLI, data plane through the SDK
+# (SPEC § Provisioning split).
+#
+# `allow_mcp_servers: true` is MANDATORY, not optional. Under `limited`
+# networking with that flag unset and the MCP host absent from `allowed_hosts`,
+# MCP tools fail SILENTLY rather than erroring (SPEC § Runtime configuration).
+#
+# No `allowed_hosts`: environments.md:553 states `allow_mcp_servers` grants
+# outbound access to the agent's configured MCP endpoints *beyond* the
+# `allowed_hosts` array, so listing the Vercel host as well would be redundant
+# and would imply the flag alone is insufficient.
+#
+# Environments are NOT versioned (environments.md:560). Changes apply only to
+# new containers; sessions already running keep the configuration they started
+# with. Keep this file's history as the record of what changed and when.
+
+name: inbox-triage-env
+config:
+  type: cloud
+  networking:
+    type: limited
+    allow_mcp_servers: true
+    allow_package_managers: false

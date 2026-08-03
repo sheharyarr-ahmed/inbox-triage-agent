@@ -32,6 +32,9 @@ curl -fsSL https://platform.claude.com/docs/en/managed-agents/<slug>.md \
 | `agent-setup.md` † | Define your agent | `…/managed-agents/agent-setup` |
 | `tools.md` † | Tools | `…/managed-agents/tools` |
 | `environments.md` † | Cloud environment setup | `…/managed-agents/environments` |
+| `permission-policies.md` ‡ | Permission policies | `…/managed-agents/permission-policies` |
+| `reference.md` ‡ | Reference | `…/managed-agents/reference` |
+| `session-operations.md` ‡ | Session operations | `…/managed-agents/session-operations` |
 
 † **Beyond SPEC § Verification.** SPEC lists nine pages; these three were added
 because Phase 2 writes `agent/agent.yaml` and `agent/environment.yaml` against
@@ -43,6 +46,37 @@ exactly these surfaces:
   shape SPEC's least-privilege allowlist depends on.
 - `environments.md` — `config.type: cloud` and `networking: limited` with
   `allow_mcp_servers`, the silent-failure trap SPEC calls out.
+
+‡ **Added 2026-08-03, Phase 2.** All three are linked from the original twelve
+but were not pulled, and between them they carried **five load-bearing claims
+that `SPEC.md` made and this repo could not substantiate**. Each is now sourced.
+See `docs/DECISIONS.md` D-018.
+
+- `permission-policies.md` — closes **D-012**. Line 20: *"the agent toolset
+  defaults to `always_allow`, and MCP toolsets default to `always_ask`."*
+  Line 205: *"MCP toolsets default to `always_ask`. This ensures that new tools
+  added to an MCP server do not execute in your application without approval. To
+  auto-approve tools from a trusted MCP server, set
+  `default_config.permission_policy` on the `mcp_toolset` entry."* The YAML at
+  lines 247–251 is the exact shape `agent/agent.yaml` uses. Line 201 also
+  confirms `default_config` is optional and defaults the agent toolset to
+  `always_allow`.
+- `reference.md` — the **full event-type catalogue**, which no other pulled page
+  contains. Sources three SPEC claims that previously rested on the SDK typings
+  alone: `session.status_terminated` (line 50), `span.model_request_end`
+  *"Includes `model_usage` with token counts"* (line 67), and the four terminal
+  outcome results (line 70). Also carries the rate limits SPEC never had: **300
+  rpm on create endpoints, 1,200 rpm on read endpoints**, per organization.
+- `session-operations.md` — the session status enum (`idle`, `running`,
+  `rescheduling`, `terminated`, line 17), which makes SPEC's
+  `status !== 'running'` poll predicate sound; *"Sessions created without
+  `initial_events` start in `idle`"* (line 19), confirming SPEC § Session
+  topology step 1; and line 531, which **sharpens** SPEC § Session topology
+  step 6: *"A `running` session cannot be archived; send an interrupt event if
+  you need to archive it immediately."* That is a documented constraint, not
+  merely the intermittent 400 SPEC describes. SPEC's stated *cause* — the stream
+  emitting idle before the queryable status catches up — remains empirical and
+  undocumented; the poll-then-archive remedy is now grounded either way.
 
 ### Two pages that are *not* these
 

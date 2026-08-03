@@ -9,7 +9,10 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx src/smoke-outcomes.ts",
+    "provision": "tsx src/deploy.ts",
+    "session": "tsx src/run.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

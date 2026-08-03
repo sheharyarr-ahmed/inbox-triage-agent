@@ -471,7 +471,7 @@ Supporting assertions on the design-intent tickets:
 
 ### Open before Phase 1
 
-- **Outcomes cannot be confirmed from the Console.** It is not a stored resource and has no page or CLI namespace; it is the `user.define_outcome` event sent through `beta:sessions:events`. Verify with a live smoke test at the **top of Phase 2**, before any triage code exists: create a throwaway session, send one `user.define_outcome` with a two-line rubric, confirm a `span.outcome_evaluation_start` comes back, then archive. A rejection there means Tier B, and learning that in Phase 2 costs minutes rather than a weekend.
+- ~~**Outcomes cannot be confirmed from the Console.** Verify with a live smoke test at the top of Phase 2.~~ **Done 2026-08-03. Outcomes work — Tier B is not needed.** `src/smoke-outcomes.ts`, throwaway agent + session, one `user.define_outcome` with a two-line **inline text** rubric (D-015). Three `span.outcome_evaluation_start` / `_end` cycles observed, `outcome_id` `outc_01Lshsva2w9NFJpJL7xbc5SV`. Two findings the test surfaced beyond the pass: `span.outcome_evaluation_end.usage` is zero-filled, which breaks § Cost controls #1 as written (D-017 / A-1); and the grader reported it could not locate deliverables from an agent whose only output was an `agent.message`, which is a live risk to § Decision capture's custom-tool design (A-4). Confirmed as specified: `max_iterations` default **3**, `iteration` **0-indexed** (0,1,2), so § Verification assertion 5's "no `iteration` exceeds 2" is arithmetically right.
 - ~~Confirm `managed-agents-2026-04-01` is the current header.~~ **Done.** `GET /v1/environments` with that header returned HTTP 200 and an empty list on 2026-08-02. Header current, Managed Agents live and ungated on the account.
 - ~~API key created and working.~~ **Done.** `GET /v1/models` returned 200.
 - ~~`vercel login`.~~ **Done.** Authenticated as `sheharyarr-ahmed`.
@@ -508,8 +508,8 @@ Updated at every phase boundary. A fresh session reads this first to learn where
 |---|---|---|---|
 | 0 | Verification, docs pull, scaffolding | `docs/reference/` populated, toolchain green | ✅ **Closed 2026-08-02** — 12 reference pages; pnpm workspace; TS 7.0.2 strict passing; `pnpm -s test` exit 0 |
 | 1 | MCP server standalone | Deployed server answers tools-list and both tools over HTTPS, token required, clean not-found path | ✅ **Closed 2026-08-03** — live at `https://mcp-server-alpha-snowy.vercel.app/mcp`; all six checks pass over HTTPS; 32 tests green |
-| 2 | Hello world on the runtime | A session runs end to end against the real account and streams events back | ⏳ **Next** |
-| 3 | The SSE consumer | Consumer survives a full session incl. one tool call, prints a readable trace, unknown event types do not crash it | ⬜ |
+| 2 | Hello world on the runtime | A session runs end to end against the real account and streams events back | ✅ **Closed 2026-08-03** — `sesn_01ARzSiW9Hnm5hr29M7CA4w1` ran end to end, 13 events streamed, terminal gate fired on `end_turn`, archived clean. Outcomes smoke test **passed** (Tier B not needed). D-012 closed and verified. Vault → MCP path proven end to end. Spend: **$0.035–0.085** of $5 |
+| 3 | The SSE consumer | Consumer survives a full session incl. one tool call, prints a readable trace, unknown event types do not crash it | ⏳ **Next** — fixture already captured at `docs/evidence/phase-2-session.jsonl` |
 | 4 | Triage core plus the skill | All ten tickets process. T-006 escalates. T-008 refused and escalated. T-009 fails gracefully | ⬜ |
 | 5 | Memory | Memory written in session A provably read and referenced in session B, proven in the trace | ⬜ |
 | 6 | Outcomes and the grader | Per-criterion rubric score for at least T-006 and T-008; iteration cap holds | ⬜ |
