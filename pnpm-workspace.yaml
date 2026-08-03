@@ -1,0 +1,7 @@
+# Two packages: this root (session driver + tests) and the MCP server.
+#
+# The split exists so Vercel can deploy with Root Directory = mcp-server and
+# still resolve @modelcontextprotocol/sdk at build time. SPEC.md § Files does
+# not list this file or mcp-server/package.json; see docs/DECISIONS.md.
+packages:
+  - "mcp-server"

@@ -1,0 +1,19 @@
+# secrets — never commit these
+.env
+.env.*
+!.env.example
+
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+.vercel/
+*.tsbuildinfo
+
+# os
+.DS_Store
+
+# strategy doc, local reference only — not for the public repo
+BLUEPRINT.md
