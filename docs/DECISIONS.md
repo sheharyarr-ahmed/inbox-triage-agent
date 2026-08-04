@@ -343,7 +343,17 @@ linked from the original twelve but never pulled. Between them they carried
 five load-bearing claims SPEC made that this repo could not substantiate:
 `session.status_terminated`, `span.model_request_end.model_usage`, `is_error` on
 `user.custom_tool_result`, `retries_exhausted`, and the poll-then-archive rule.
-Each is now sourced. Provenance and the specific line references are in
+Each is now sourced.
+
+**Corrected 2026-08-04 (A-6, accepted and widened). Two of those five are not in
+those pages at all.** `retries_exhausted` and `is_error` return zero hits across
+all eighteen pages in `docs/reference/`. Both values are real and both come from
+the installed SDK's type declarations — `BetaManagedAgentsSessionRetriesExhausted`
+and `is_error?: boolean | null` on
+`BetaManagedAgentsUserCustomToolResultEventParams`
+(`resources/beta/sessions/events.d.ts:1199`) — and Phase 4 uses `is_error` in
+production. Only the provenance claimed here was wrong. The remaining three are
+sourced as stated. Provenance and the specific line references are in
 `docs/reference/README.md`.
 
 `reference.md` also supplies rate limits SPEC never recorded: **300 rpm on
@@ -558,17 +568,346 @@ import; or have the suite provide a fixture env. The first is smallest and keeps
 
 ---
 
+## Phase 4 — triage core plus the skill
+
+### D-029 · `src/events.ts` reconnected after the wall clock had expired, and hung
+
+**A bug in a closed module, reachable for the first time in this phase.**
+`consumeEvents`'s reconnect loop was guarded on `reason === null` alone. Both its
+timers are one-shot, so once the hard timer had aborted the stream they were
+spent — and `apiSource.abort()` nulls `open`, so the next `live()` returned a
+fresh, un-aborted controller with nothing armed to stop it.
+
+A session parked at `session.status_idle` / `requires_action` emits nothing at
+all. The soft timer's `user.interrupt` does not land while blocking events are
+unresolved, and its rejection is swallowed. So `drain()` on the reconnected
+stream never returned, `finally` was never reached, `consumeEvents` never
+resolved, and a ten-ticket driver would have wedged on ticket one.
+
+Fix is one term: `reason === null && !timedOut && attempt <= maxReconnects`,
+which routes an expired run to `trace.finish("timeout")` — the outcome
+SPEC § Bounded iteration already specifies. Phases 0-3 never saw it because no
+earlier agent version could park a session at `requires_action`.
+
+Proven by mutation, per D-027: reverting the term makes
+`tests/events.test.ts`'s "does not reconnect once the wall clock has expired"
+report 4 connects instead of 1.
+
+### D-030 · The custom-tool reply is keyed on the idle event, not on arrival
+
+`events.ts` dispatched `onCustomToolUse` the moment `agent.custom_tool_use`
+arrived, which posts a `user.custom_tool_result` while the session is still
+`running`. Three sources say the reply is keyed on the idle instead, and none of
+them is the arrival event:
+
+- `events.d.ts:1184-1190` — the id to echo "can be found in the last
+  `session.status_idle` event's `stop_reason.event_ids` field".
+- `events-and-streaming.md:1874` — "The session pauses with a
+  `session.status_idle` event containing `stop_reason: requires_action`."
+- `tests/fixtures/synthetic-events.jsonl`, this repo's own committed Phase-4
+  contract: use@12 → idle@15 → reply@16.
+
+Dispatch now happens on `session.status_idle`, iterating `stop_reason.event_ids`
+and looking each id up among stashed use-events. Three details are load-bearing:
+`requires_action` carries **no discriminator** — tool confirmation blocks with an
+identical shape (`permission-policies.md:653`) — so each id is type-checked
+before a result is sent for it; dispatch is on `session.status_idle` only and
+never the `session.thread_status_idle` decoy, or every reply doubles; and
+iterating `event_ids` rather than taking `[0]` is what makes two calls in one
+turn resolve instead of deadlock (`events.d.ts:701-702`).
+
+Decision *capture* stays on arrival, so `ConsumerResult.decision` is unchanged.
+All 61 pre-existing tests stayed green; reverting the dispatch point fails four.
+
+**Confirmed live**, `docs/evidence/phase-4-probe-T-006.jsonl` events 19-24:
+`agent.custom_tool_use` → `session.thread_status_idle` → `session.status_idle` →
+`user.custom_tool_result`.
+
+### D-031 · D-005 closed — `z.toJSONSchema()` drops `.refine()` silently
+
+Measured, not inferred. `z.toJSONSchema(TriageDecision)` does **not** throw. It
+emits a complete draft-2020-12 object schema for all seven fields with
+`additionalProperties: false` and **discards all three `.refine()` calls without
+a word** — the worst of the two outcomes D-005 anticipated, because there is no
+signal at all.
+
+So the published `input_schema` is usable exactly as generated, and the
+cross-field invariants are enforced where SPEC § Decision capture already put
+them: host-side in `run.ts`, answering a violation with `is_error: true` and the
+flattened Zod message.
+
+Considered and rejected: hand-writing an `anyOf` discriminated union in
+`agent.yaml` to encode the invariants in JSON Schema. It would work, but it forks
+the contract away from `src/decision.ts`, and the host-side path is also what
+exercises the custom-tool error round trip.
+
+`src/decision.ts` is untouched and byte-verbatim to SPEC. The schema is committed
+in `agent.yaml` as a one-line JSON flow mapping — YAML 1.2 is a JSON superset, so
+`ant` parses it and `tests/decision-schema.test.ts` can `JSON.parse` it with no
+YAML dependency. That test asserts it deep-equals a freshly generated schema, so
+drift is caught offline for $0; mutating one field type in the committed block
+turns it red.
+
+`$schema` is stripped before publishing — no `tools.md` example carries it, and
+the test asserts the shape actually sent.
+
+### D-032 · A-4 is CONFIRMED. The grader reads the filesystem and cannot see a custom-tool payload
+
+**The most consequential measurement of this phase, and it settles an amendment
+that had been open since Phase 2 on one confounded observation.**
+
+A single session produced a controlled within-run comparison, because the only
+variable that changed between the two grader passes was whether a file existed.
+
+`docs/evidence/phase-4-probe-T-006.jsonl`:
+
+- Event 19-24 — the decision is submitted through `submit_triage_decision` and
+  accepted. At this point it exists **only** as a custom-tool payload.
+- Event 34 — `span.outcome_evaluation_end`, iteration 0, **`needs_revision`**, all
+  three criteria "not met", each for the same reason, verbatim: *"No deliverables
+  could be found in the filesystem. After extensive searching through
+  /mnt/session/outputs, /mnt/session, /workspace, and the broader filesystem, no
+  triage decision document, JSON file, or any other output was located."*
+- Event 39 — the agent, responding to that feedback, writes
+  `/mnt/session/outputs/T-006-triage-decision.json` of its own accord.
+- Event 47 — iteration 1, **`satisfied`**, with the grader quoting that file's
+  fields back.
+
+Phase 2's observation was not the degenerate setup A-4 hedged about. The grader
+genuinely does not see custom-tool payloads, and SPEC § Decision capture's design
+is ungradeable as written.
+
+**Mitigation, now shipped in `SKILL.md`:** write the decision to
+`/mnt/session/outputs/<ticket_id>.json`, then submit the same object through the
+tool. `write` was already in the allowlist, so no toolset change was needed.
+
+Every SPEC-stated reason for the custom tool survives — the Zod boundary, typed
+ship-gate assertions instead of regex over prose, the committed round trip. The
+file is what the grader reads; the tool payload is still what the host asserts on.
+
+**The mitigation pays for itself.** Re-running the same ticket with it in place
+(`phase-4-probe-fixed-T-006.jsonl`): `write` → `submit` → iteration 0
+**`satisfied`**. One grader evaluation instead of two, and the session cost fell
+from $0.10 to $0.04.
+
+Consequence for Phase 6: this is not optional polish. Without it every ticket
+burns a full revision cycle rediscovering the same thing, and at
+`max_iterations` 3 across ten tickets that is thirty evaluations spent on an
+avoidable defect.
+
+### D-033 · A skill bundle's folder name must equal the `name` in its `SKILL.md`
+
+Undocumented in all eighteen pages of `docs/reference/`; found by a 400:
+
+> The folder name 'triage' must match the skill name 'triaging-support-tickets'
+> in SKILL.md.
+
+The repo directory stays `agent/skills/triage/` as SPEC § Files specifies. The
+upload folder is **derived from the frontmatter** in `deploy.ts` rather than
+written as a literal, so the two cannot drift back into that error.
+
+Two smaller findings from the same step. Dotfiles are excluded from the bundle —
+the first upload silently included the `.gitkeep` that had been holding the
+directory in git, and `skill-authoring-best-practices.md`'s security guidance is
+to review every file bundled in a skill. And deleting a skill requires deleting
+its versions first ("Cannot delete skill with existing versions"), which is why
+the first, dirty skill could be removed cleanly rather than left as an orphan.
+
+Skills are immutable, so an edited `SKILL.md` needs a new **version**, not an
+update: `pnpm provision --new-skill-version`. Explicit rather than automatic,
+because provisioning is safe to re-run precisely because it does not mint
+resources on its own initiative — the same reasoning as D-016.
+
+### D-034 · `session.usage` carries `list_cost`, which supersedes the derivation
+
+`src/cost.ts` brackets the run between a Haiku floor and an Opus ceiling because
+D-017 established there is no model attribution. **There is a directly reported
+figure and nothing in SPEC or `docs/reference/` mentions it.** The
+`session.usage` event — a type the SDK's TypeScript union does not declare, see
+D-035 — carries:
+
+```json
+"list_cost": {"amount": "0.1", "currency": "USD"}
+```
+
+Cross-checked against the derivation on four sessions: the bracket always
+contained `list_cost`, and its **ceiling** was near-exact ($0.1050 derived vs
+$0.10 reported; $0.0479 vs $0.04). The floor was not close. That is the practical
+lesson — quoting the floor of a 5x bracket as an estimate understates by design.
+
+Pricing `session.usage`'s own four token fields at Haiku rates reproduces
+`list_cost` to within its 2-decimal rounding ($0.0952 vs $0.10, $0.0386 vs
+$0.04), which also means the grader is not billed at a premium tier the way the
+Opus ceiling assumed.
+
+This **refines A-1 rather than contradicting it**: `session.usage` is
+authoritative, as A-1 says. What is now unnecessary is splitting agent from
+grader by subtraction and bracketing the result. Recorded rather than
+implemented — rewriting `cost.ts` is not Phase 4 scope, and the bracket is
+honest, merely coarse. Phase 6 should read `list_cost`.
+
+### D-035 · `session.usage` is a live unknown event type — D-023's claim is now stronger
+
+D-023 states the consumer's default branch is reachable on the live stream only
+through three names that are on the SDK's frame allowlist but absent from its
+TypeScript union. **There is a fourth, and it appeared on every Phase 4
+session:** `session.usage`, four times per run, logged as
+`unknown event type=session.usage id=…` and survived without incident.
+
+It is not a curiosity: it is the event carrying `list_cost` (D-034). So the
+unknown-event handling that D-023 was careful to describe modestly turned out to
+be load-bearing on the very first phase that ran a real workload — an event the
+SDK could not type carried the only authoritative cost figure the platform emits.
+
+### D-036 · `deploy.ts` persists each id as it is returned, not in a batch
+
+The four provisioning steps collected their ids and wrote `.env.local` once at
+the end. Any throw between a create call and that write orphaned the resource: it
+existed on the server, the repo had no record of it, and the next run's existence
+check took the create branch again and minted a second one — exactly the
+non-idempotency D-016 exists to prevent, one layer down. It was live: step 4
+threw whenever `agent/rubric.md` existed, which is a Phase 6 artifact.
+
+`upsertEnvFile` is already the single shared writer and is covered by tests, so
+calling it per resource costs nothing.
+
+### D-037 · `SKILL.md` calls `lookup_account` on every ticket, unconditionally
+
+**Deviates from blueprint §6.2**, which describes T-002 as "no lookup needed".
+
+Considered: (a) look up only when the decision appears to need it; (b) look up
+whenever the ticket names an `account_id`; (c) always.
+
+Chose (c). It is what makes the T-009 gate deterministic rather than lucky. SPEC's
+supporting assertion is stronger than the phase-ledger line: T-009's *citations
+must reference the not-found record*. With a conditional rule the agent can
+escalate correctly by citing `ticket.account_id` alone, never call the tool, and
+pass on disposition and `draft_reply` while failing the citation clause. Options
+(b) and (c) are identical for this data — all ten tickets carry the field — and
+(c) is the simpler sentence to write and to defend.
+
+Blueprint §6.2 is superseded here, not contradicted: it describes what T-002's
+*decision* rests on, a `ticket_field` citation, not a prohibition on looking. SPEC
+§ Seeded data assigns T-002 an account regardless.
+
+`SKILL.md` also pins the expected citation for the not-found case,
+`lookup_account.found`, so the assertion has a stable shape to match rather than
+whatever the first run happened to produce. T-009 cited exactly that.
+
+### D-038 · Phase 4 runs ungraded, and every ticket is delivered by `user.message`
+
+**Deviates from SPEC § Session topology step 3**, which specifies
+`user.define_outcome` as the delivery vehicle and says "No separate
+`user.message`". Raised as amendment A-8.
+
+The two SPEC sections cannot both be satisfied. `rubric` is a **required** field
+on `user.define_outcome` (`events.d.ts:1237-1251`), so a ticket without a rubric
+cannot use that event at all — while SPEC § Cost controls #4 caps outcomes at
+gate tickets "only during development". Something has to give.
+
+Phase 4's acceptance criterion names no grader, so the ungraded reading wins, and
+it removes a real hazard: SPEC § Rubric criterion 3 exists precisely because a
+grader can return `needs_revision` on T-006's *correct* escalation and pressure
+it into resolving on pass two. Staking Phase 4's hard gate on that would fail the
+phase for a Phase 6 reason.
+
+`agent/rubric.md` is therefore **not** written in Phase 4 — the ledger,
+`deploy.ts:12` and `config.ts:74` all independently place it in Phase 6. The A-4
+probe used a throwaway inline text rubric instead, on D-015's precedent.
+
+Cost consequence, measured: an ungraded ticket costs ~$0.013 against ~$0.04 for a
+graded one.
+
+### D-039 · Two measured quality gaps handed to Phase 6, not papered over here
+
+The ten-ticket acceptance run met every condition the phase ledger names. Two
+things it also measured are worth stating plainly rather than leaving for a
+later phase to rediscover.
+
+**1. The agent escalates more than the seeded data intends.** Blueprint §6.2
+designs T-001, T-002, T-003 and T-010 to auto-resolve; all four escalated. Only
+T-004 and T-007 auto-resolved, and T-005 declined as designed.
+
+This is not a Phase 4 failure — SPEC states no assertion on those tickets, and
+the phase ledger asks only that ten process and that three named tickets behave.
+It is also the *safe* direction of error: every escalation cited real records,
+none guessed, and the three hard gates held. But SPEC § Rubric criterion 3 calls
+escalating a clear case a **soft fail**, and the outcomes grader is the mechanism
+SPEC provides for correcting exactly this. Phase 6 should expect to tune the
+escalation threshold and should measure it against these committed decisions
+rather than starting from scratch.
+
+**2. Two of ten decisions promise something they did not cite.** Measured with
+`unsupportedClaims` in `src/assertions.ts`, and both are real:
+
+- **T-005** promised "your June order (ORD-4201, $89)" while citing only the
+  refund window. The figures are correct — it had called `lookup_orders` — but
+  uncited.
+- **T-004** promised a refund "within 5-7 business days". `$149.00` and
+  `ORD-4101` *were* cited correctly from `lookup_orders`; the uncited claim is
+  the processing time, which no record supports. That is an invented **policy
+  term**, precisely what SPEC § Rubric criterion 4 names.
+
+**A prompt-level fix was tried and did not hold.** `SKILL.md` gained an explicit
+step 4 requiring every figure in `draft_reply` to carry its own citation. T-005
+passed in isolation after that change and regressed inside the full run. One
+round of instruction-tightening is where Phase 4 stopped: this is a grounding
+quality problem, SPEC assigns it to rubric criterion 4, and the grader is the
+designed mechanism. Spending further here would spend Phase 6's budget early to
+solve Phase 6's problem.
+
+**Why the assertion was built now anyway.** It is a ship-gate condition
+(§ Verification assertion 3, second clause), and it is checkable only if
+`SKILL.md` tells the agent to cite every figure it promises. Discovering that at
+Phase 7 costs another full ten-ticket run. It is reported by the driver, not
+gated on, so a met Phase 4 criterion is not misreported as failed.
+
+### D-040 · The first version of that assertion cried wolf, which is worse than not having it
+
+Worth recording because the failure mode is instructive rather than embarrassing.
+
+The first `unsupportedClaims` matched substrings. It reported **T-004** as
+promising an uncited `$149.00` when the citation said `149` — cited correctly,
+from `lookup_orders.amount_usd`. It also extracted `4201` out of `ORD-4201` and
+reported it as a second, phantom money claim alongside the id.
+
+So the first ten-ticket run showed two flagged tickets of which one was noise,
+and the noise sat directly next to the one real defect. An assertion that fires
+on correct work does not merely waste attention — it makes the true positive
+look like more of the same.
+
+Fixed by comparing numbers **numerically** rather than as strings, stripping
+identifiers before scanning for figures, and excluding bare years as calendar
+context. Now in `src/assertions.ts` rather than inline in the driver, with six
+unit tests including one named for the `$149.00`-versus-`149` regression, so the
+distinction is held by a test rather than by memory.
+
+The re-evaluation cost **$0**: the driver persists every decision to
+`docs/evidence/phase-4-decisions.json`, so a corrected checker re-ran against the
+committed artifact instead of against the API.
+
 ## Proposed `SPEC.md` amendments
 
 SPEC § Subagents: *"A finding that contradicts this spec is escalated to the
 operator, never silently applied."*
 
-**Status:** A-2 was **accepted in full on 2026-08-04 and applied to `SPEC.md`**
-(see D-024); its text is kept below so the raise-then-rule sequence stays
-auditable. A-1, A-3 and A-4 remain raised and unruled. A-5 and A-6 are new in
-Phase 3. None of the open ones block Phase 4.
+**Status, as of Phase 4 (2026-08-04).** Every amendment raised through Phase 3
+has now been ruled on. A-1, A-2, A-3, A-5 and A-6 are **accepted and applied to
+`SPEC.md`**. A-4 is **confirmed by measurement and resolved** — it was the one
+that could have invalidated a design, and it did. Their text is kept below so the
+raise-then-rule sequence stays auditable.
 
-### A-1 · § Cost controls #1 describes a method that under-reports
+A-7 through A-10 are new in Phase 4 and unruled. None blocks Phase 5; A-7 and A-8
+both bear on Phase 6 and should be ruled before it starts.
+
+### A-1 · ✅ ACCEPTED 2026-08-04, APPLIED — § Cost controls #1 describes a method that under-reports
+
+**Ruled on by the operator in Phase 4. `SPEC.md` § Cost controls #1 is rewritten.**
+Phase 4 then found a better source than the accepted remedy: the `session.usage`
+event carries a platform-reported `list_cost`, so the grader's share need not be
+derived by subtraction and the Haiku..Opus bracket is unnecessary. That refines
+this amendment rather than reversing it — `session.usage` is authoritative either
+way. See D-034. The original text follows.
 
 Covered in full by D-017. SPEC directs summing
 `span.model_request_end.model_usage` and `span.outcome_evaluation_end.usage`;
@@ -616,7 +955,13 @@ unconditional *"appear twice"* framing, not the queueing mechanic. A
 pending-state UI keyed on "first sighting is always null" would fail for
 `user.message` too, not only for the two SPEC names.
 
-### A-3 · § Session topology step 6 — the reason is empirical, the rule is now sourced
+### A-3 · ✅ ACCEPTED 2026-08-04, APPLIED — § Session topology step 6, the reason is empirical, the rule is now sourced
+
+**Ruled on by the operator in Phase 4.** `SPEC.md` now states the archive
+constraint as documented rather than as an intermittent race. Phase 4's driver
+tightened the remedy further: it polls for `idle` or `terminated` rather than
+SPEC's `!== 'running'`, which also admits the transient `rescheduling` state. The
+original text follows.
 
 SPEC: *"Archiving straight off the idle event intermittently returns 400 because
 the stream emits idle slightly before the queryable status catches up."*
@@ -627,9 +972,23 @@ archive it immediately."* That is a documented constraint, not an intermittent
 race. SPEC's stated *cause* remains undocumented. The poll-then-archive remedy
 is correct either way and is what `run.ts` does.
 
-### A-4 · § Decision capture may be incompatible with the outcomes grader
+### A-4 · ❌ CONFIRMED 2026-08-04 AND MITIGATED — § Decision capture was incompatible with the outcomes grader
 
-**Raised as a Phase 6 risk, not a Phase 2 finding. Not established.**
+**Settled in Phase 4 by measurement, one phase earlier than filed, because the
+experiment is impossible before an agent version carrying the custom tool exists
+— which is Phase 4's own deliverable.**
+
+**The risk was real.** A single session gave a controlled comparison: with the
+decision existing only as a custom-tool payload the grader returned
+`needs_revision` on every criterion, reporting it had searched
+`/mnt/session/outputs`, `/mnt/session`, `/workspace` and the broader filesystem
+and found nothing; after the agent wrote a JSON file it returned `satisfied`,
+quoting that file. Full evidence and the shipped mitigation are in **D-032**.
+
+Phase 2's observation was NOT the degenerate setup this amendment hedged about.
+The original text follows.
+
+**As raised in Phase 2:**
 
 Across all three smoke-test iterations the grader reported it could not find
 anything to grade, verbatim:
@@ -654,7 +1013,16 @@ Cheap to settle in Phase 6 before committing to the design: enable `write`, have
 the agent write to `/mnt/session/outputs/`, and compare against a run where the
 deliverable exists only as a custom-tool payload.
 
-### A-5 · § The SSE consumer's terminal gate omits `session.deleted` — RAISED IN PHASE 3
+### A-5 · ✅ ACCEPTED 2026-08-04, APPLIED — § The SSE consumer's terminal gate omits `session.deleted`
+
+**Ruled on by the operator in Phase 4: keep the provisional mapping.**
+`session.deleted` stays mapped to `terminated`, `ConsumerResult.terminatedBy`
+keeps its four members, and `SPEC.md` § The SSE consumer gains a sentence naming
+the third terminal condition. No code change — the provisional application
+becomes the ruling. A distinct `terminatedBy: 'deleted'` was considered and
+declined: `terminatedBy` is a published contract in SPEC § Files, and Phase 4
+needs no distinction between a terminated and a deleted session. The original
+text follows.
 
 SPEC names exactly two terminal conditions: `session.status_terminated`, and
 `session.status_idle` when `stop_reason.type !== 'requires_action'`. There is a
@@ -674,7 +1042,23 @@ one module Phase 4 depends on was the worse of the two options — flagged here
 rather than left silent. If the operator prefers a distinct
 `terminatedBy: 'deleted'`, it is a one-line change plus the union.
 
-### A-6 · D-018 mis-sources `retries_exhausted` — RAISED IN PHASE 3
+### A-6 · ✅ ACCEPTED 2026-08-04, APPLIED, AND WIDENED — D-018 mis-sources `retries_exhausted`
+
+**Ruled on by the operator in Phase 4, and the defect is larger than raised.**
+D-018 claims five SPEC assertions were substantiated by the three late-pulled
+reference pages. **Two of the five are not in those pages at all.**
+`retries_exhausted` is one, as raised here. The other is **`is_error` on
+`user.custom_tool_result`**: a case-insensitive search of all eighteen pages in
+`docs/reference/` returns zero hits.
+
+Both values are real and both are sourced from the installed SDK's type
+declarations — `is_error?: boolean | null` is declared on
+`BetaManagedAgentsUserCustomToolResultEventParams`
+(`resources/beta/sessions/events.d.ts:1199`), doc-commented "Whether the tool
+execution resulted in an error", and Phase 4 uses it in production. Only the
+provenance was wrong, and it is worth correcting for the same reason as raised:
+D-018's claim that each of the five is "now sourced" is what a reader relies on,
+and `/defend` answers from this file. The original text follows.
 
 D-018 lists `retries_exhausted` among five SPEC claims it says the three
 late-pulled reference pages substantiated. It does not appear in any of the
@@ -691,3 +1075,103 @@ Only the provenance is wrong: the source is the installed SDK's type
 declarations, not `reference.md`. Worth correcting because D-018's claim that
 each of the five is "now sourced" is what a reader would rely on, and `/defend`
 answers from this file.
+
+### A-7 · § Verification condition 5 asks for a "per-criterion rubric score" that has no structured form — RAISED IN PHASE 4
+
+SPEC § Verification, condition 5: *"The outcomes grader returns a **per-criterion
+rubric score**."* Assertion 6 wants a screenshot of *"a
+`span.outcome_evaluation_end` showing per-criterion feedback."*
+
+There is no structured per-criterion output anywhere. `span.outcome_evaluation_end`
+carries one `result: string` and one freeform `explanation: string`
+(`events.d.ts:962-1010`), and `define-outcomes.md:586` says the grader's
+reasoning is *"opaque: you see that it's working, not what it's thinking."*
+
+**But the bar SPEC is reaching for is met in practice, and Phase 4 has the
+artifact to prove it.** The grader enumerates every criterion in `explanation`,
+verdict-tagged, unprompted — from `phase-4-probe-T-006.jsonl`:
+
+> - The decision names exactly one category from: billing, technical,
+>   account-access, refund-request, other. **(not met)**: No deliverables could
+>   be found in the filesystem. …
+> - Every claim in the decision cites a specific ticket field or a specific
+>   record returned by a tool. **(not met)**: …
+
+Suggested amendment: restate condition 5 as *"an explanation that names each
+rubric criterion and its verdict"*, which is what the platform actually provides
+and what a reviewer actually needs. The alternative — asserting on a structured
+field — cannot be met at all, and the assertion should not describe a shape the
+API does not have.
+
+Consequence for Phase 6: `agent/rubric.md` should number and name its five
+criteria so each one is individually quotable in the explanation. That is a
+constraint on the rubric text, decided now rather than discovered later.
+
+### A-8 · § Session topology step 3 and § Cost controls #4 cannot both be satisfied — RAISED IN PHASE 4
+
+SPEC § Session topology step 3: *"Send `user.define_outcome` with the ticket body
+in `description` … **No separate `user.message`**; the outcome event starts the
+work."*
+
+SPEC § Cost controls #4: *"Outcomes on gate tickets only during development."*
+
+`rubric` is a **required** field on `user.define_outcome`
+(`events.d.ts:1237-1251`) — there is no way to send that event without one. So a
+ticket that carries no outcome cannot be delivered by the mechanism step 3
+mandates, and #4 explicitly contemplates tickets that carry no outcome. The two
+sections are in direct conflict for any run that is not fully graded.
+
+Phase 4 resolved it in the cheap direction and recorded the deviation (D-038):
+all ten tickets delivered by `user.message`, ungraded, because Phase 4's
+acceptance criterion names no grader.
+
+Suggested amendment: state that `user.define_outcome` is the delivery vehicle
+**for graded runs**, `user.message` for ungraded ones, and that the two never
+appear on the same session. Note also what this costs: the ship gate runs all ten
+by `define_outcome`, and a ticket delivered as a task specification is not
+self-evidently handled the same way as one delivered as a chat turn. Phase 6
+should re-prove the gate tickets on the graded path rather than assume Phase 4's
+results transfer.
+
+### A-9 · § Runtime configuration pins the wrong skill version literal — RAISED IN PHASE 4
+
+`SPEC.md:217` pins `skills: - {type: custom, skill_id: ${TRIAGE_SKILL_ID},
+version: "1"}`, justified at `SPEC.md:243` as *"Pinned, not `latest`, so a session
+is reproducible."*
+
+The intent is right and is kept. The literal is wrong. Custom skill versions are
+epoch-timestamp strings — `skills-guide.md:50`, custom-skill column: *"Epoch
+timestamp: `1759178010641129` or `latest`"* — and the two versions this phase
+created are `1785848539568876` and `1785849107325566`. `"1"` is not a value the
+API would ever return.
+
+Already handled in code: `deploy.ts` records whatever `latest_version` comes back
+as `TRIAGE_SKILL_VERSION`, and `apply-control-plane.sh` substitutes it into
+`agent.yaml`. SPEC's text is what needs correcting.
+
+Related and also unstated in SPEC: `agent.yaml` uses `${TRIAGE_SKILL_ID}` but
+`ant` receives the file on stdin and performs no interpolation, so nothing
+substituted it. Harmless while there was no `skills` key; a literal
+`${TRIAGE_SKILL_ID}` on the wire once there was one.
+
+### A-10 · § Decision capture rests part of its rationale on an unsourced figure — RAISED IN PHASE 4
+
+`SPEC.md:266` justifies routing the decision through a custom tool rather than
+session output files partly because it *"avoids the one to three second Files API
+indexing lag after idle."*
+
+That figure appears nowhere in the eighteen pages of `docs/reference/`.
+`define-outcomes.md:718` says only *"Once the session is idle, fetch them through
+the Files API."* No latency is stated anywhere.
+
+This matters more after D-032 than it did before. A-4 turned out to be real, so
+the decision now lands in `/mnt/session/outputs/` **as well as** through the
+custom tool — which means the rationale for preferring the tool is doing less
+work than it was, and one of its three stated reasons cannot be defended from the
+repo. The other two stand on their own: the Zod boundary, and typed ship-gate
+assertions instead of regex over prose.
+
+Suggested amendment: drop the indexing-lag clause, or replace it with the
+measured reason the custom tool earned in Phase 4 — it is what carries the
+decision back to the host synchronously, so the host can reject a malformed
+payload and let the agent correct, which a file cannot do.

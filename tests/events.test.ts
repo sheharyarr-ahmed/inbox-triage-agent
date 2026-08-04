@@ -100,6 +100,19 @@ function bare(type: string, id: string): StreamEvent {
   } as unknown as StreamEvent;
 }
 
+/** An `agent.custom_tool_use` carrying an arbitrary payload. */
+function customToolUse(id: string, name = "submit_triage_decision"): StreamEvent {
+  return {
+    id,
+    input: { ticket_id: "T-006" },
+    name,
+    processed_at: "2026-08-04T09:00:00.000000Z",
+    type: "agent.custom_tool_use",
+  } as unknown as StreamEvent;
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 describe("consumeEvents replaying the real Phase 2 trace", () => {
   it("produces the expected ConsumerResult", async () => {
     const result = await consumeEvents({
@@ -464,5 +477,125 @@ describe("robustness of the consumer loop", () => {
 
     expect(source.interrupts()).toBe(1);
     expect(result.terminatedBy).toBe("timeout");
+  });
+});
+
+/**
+ * Points 5 and 6 in the src/events.ts header. Both are Phase 4 fixes to bugs
+ * that only a session parked at `requires_action` can reach, which is why three
+ * closed phases never saw them.
+ */
+describe("the custom-tool round trip and the wall clock that bounds it", () => {
+  it("does not reconnect once the wall clock has expired", async () => {
+    // Point 5. The bug: the reconnect loop was guarded on `reason === null`
+    // alone, so an expired run kept reconnecting. Both timers are one-shot and
+    // already spent by then, so on a session parked at `requires_action` — which
+    // emits nothing at all — `drain()` on the new stream never returns and
+    // `consumeEvents` never resolves. A ten-ticket driver wedges on ticket one.
+    //
+    // Asserting on `connects()` targets the guard directly. The hang is the
+    // downstream consequence of the reconnect; reconnecting at all after expiry
+    // is the defect. Reverting `!timedOut` makes this read 4, not 1.
+    //
+    // The first stream outlives the deadline and then ends without a terminal
+    // event, which is the shape point 4 turns into a reconnect. `interrupt()`
+    // is a no-op here on purpose: a session blocked on an unresolved tool event
+    // is exactly the case where the interrupt does not land.
+    let connects = 0;
+    const source: EventSource = {
+      async live() {
+        connects += 1;
+        return (async function* () {
+          await sleep(60);
+        })();
+      },
+      history() {
+        return (async function* () {})();
+      },
+      async interrupt() {},
+      abort() {},
+    };
+
+    const result = await consumeEvents({
+      source,
+      deadlineMs: 20,
+      log: silent,
+    });
+
+    expect(connects).toBe(1);
+    expect(result.terminatedBy).toBe("timeout");
+  });
+
+  it("dispatches the custom-tool reply on the idle event, not on arrival", async () => {
+    // Point 6. events.d.ts:1184-1190 says the id to echo back "can be found in
+    // the last `session.status_idle` event's `stop_reason.event_ids` field", and
+    // the committed synthetic fixture encodes use@12 -> idle@15 -> reply@16.
+    // Dispatching on arrival posts a result while the session is still running.
+    const order: string[] = [];
+
+    await consumeEvents({
+      source: replaySource(SYNTHETIC),
+      deadlineMs: 60_000,
+      log: silent,
+      onEvent: (e) => order.push(e.type),
+      onCustomToolUse: async () => {
+        order.push("DISPATCH");
+      },
+    });
+
+    const at = order.indexOf("DISPATCH");
+    expect(at).toBeGreaterThan(-1);
+    // Immediately after the real idle — not after `agent.custom_tool_use`, and
+    // not after the `session.thread_status_idle` decoy that carries an identical
+    // stop_reason two events earlier.
+    expect(order[at - 1]).toBe("session.status_idle");
+    expect(order.filter((o) => o === "DISPATCH")).toHaveLength(1);
+  });
+
+  it("answers every blocking id, so two calls in one turn do not deadlock", async () => {
+    // events.d.ts:701-702: "Resolving fewer than all re-emits
+    // `session.status_idle` with the remainder." Taking `event_ids[0]` and
+    // ignoring the rest parks the session until the wall clock fires.
+    const answered: string[] = [];
+
+    await consumeEvents({
+      source: replaySource([
+        customToolUse("sevt_use_a"),
+        customToolUse("sevt_use_b"),
+        idle({ type: "requires_action", event_ids: ["sevt_use_a", "sevt_use_b"] }, "sevt_block"),
+        idle({ type: "end_turn" }, "sevt_end"),
+      ]),
+      deadlineMs: 60_000,
+      log: silent,
+      onCustomToolUse: async (e) => {
+        answered.push(e.id);
+      },
+    });
+
+    expect(answered).toEqual(["sevt_use_a", "sevt_use_b"]);
+  });
+
+  it("does not answer a blocking id that is not a custom tool call", async () => {
+    // `requires_action` carries no discriminator — tool confirmation blocks with
+    // the identical shape (permission-policies.md:653). Sending a
+    // `user.custom_tool_result` for a confirmation id is a 400 that leaves the
+    // session parked, which is exactly the state point 5 has to escape.
+    const answered: string[] = [];
+
+    const result = await consumeEvents({
+      source: replaySource([
+        customToolUse("sevt_use_a"),
+        idle({ type: "requires_action", event_ids: ["sevt_confirmation"] }, "sevt_block"),
+        idle({ type: "end_turn" }, "sevt_end"),
+      ]),
+      deadlineMs: 60_000,
+      log: silent,
+      onCustomToolUse: async (e) => {
+        answered.push(e.id);
+      },
+    });
+
+    expect(answered).toEqual([]);
+    expect(result.terminatedBy).toBe("end_turn");
   });
 });

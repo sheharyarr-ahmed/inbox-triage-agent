@@ -6,9 +6,12 @@
  *
  * SPEC § The SSE consumer opens with the reason this file is specified
  * concretely rather than left to taste: it "is the piece most likely to be
- * mistaken for a print loop". The four behaviours below are the ones that make
+ * mistaken for a print loop". The six behaviours below are the ones that make
  * it not a print loop, and each has a failure mode that only shows up in a phase
  * later than the one that would have caught it.
+ *
+ * Points 5 and 6 were added in Phase 4, which is the first phase that can park a
+ * session at `requires_action` and therefore the first that can reach either bug.
  *
  * 1. TERMINAL GATE. Break on `session.status_terminated`, or on
  *    `session.status_idle` when `stop_reason.type !== 'requires_action'`. Idle
@@ -52,6 +55,38 @@
  *    dropped stream and triggers the reconnect path. SPEC § The SSE consumer
  *    specifies the reconnect procedure but never says what triggers it.
  *    See docs/DECISIONS.md D-022.
+ *
+ * 5. RECONNECT MUST NOT OUTLIVE THE WALL CLOCK. Point 4 makes exhaustion trigger
+ *    a reconnect; a session parked at `requires_action` emits nothing, so that
+ *    reconnect blocks forever. Both timers below are one-shot: once the hard
+ *    timer has aborted the stream, `apiSource.abort()` nulls `open`, so the NEXT
+ *    `live()` hands back a fresh, un-aborted controller with nothing armed to
+ *    stop it. `consumeEvents` then never resolves and a ten-ticket driver wedges
+ *    on ticket one. The reconnect loop is therefore guarded on `!timedOut`, which
+ *    routes an expired run to `trace.finish("timeout")` — the outcome SPEC
+ *    § Bounded iteration already specifies. See docs/DECISIONS.md D-029.
+ *
+ * 6. THE CUSTOM-TOOL REPLY IS KEYED ON THE IDLE EVENT, NOT ON ARRIVAL. Dispatch
+ *    happens on `session.status_idle` with `stop_reason.type === 'requires_action'`,
+ *    iterating `stop_reason.event_ids` and looking each id up in the stashed
+ *    `agent.custom_tool_use` events. Three sources agree and none of them is the
+ *    arrival event:
+ *
+ *      events.d.ts:1184-1190  "The id of the `agent.custom_tool_use` event this
+ *        result corresponds to, which can be found in the last
+ *        `session.status_idle` event's `stop_reason.event_ids` field."
+ *      events-and-streaming.md:1874  "The session pauses with a
+ *        `session.status_idle` event containing `stop_reason: requires_action`.
+ *        The blocking event IDs are in the `stop_reason.event_ids` array."
+ *      tests/fixtures/synthetic-events.jsonl  use@12 -> idle@15 -> reply@16.
+ *
+ *    Replying on arrival posts a result while the session is still `running`.
+ *    `requires_action` carries NO discriminator — tool confirmation uses the
+ *    identical shape — so each blocking id is type-checked before a
+ *    `user.custom_tool_result` is sent for it. Dispatch is on `session.status_idle`
+ *    only, never the `session.thread_status_idle` decoy, or every reply doubles.
+ *    Iterating `event_ids` rather than taking `[0]` is what makes two calls in
+ *    one turn resolve instead of deadlock. See docs/DECISIONS.md D-030.
  *
  *   usage:  pnpm exec tsx src/events.ts tests/fixtures/session-events.jsonl
  */
@@ -241,6 +276,17 @@ class Trace {
     { name: string; startedAt: number }
   >();
 
+  /**
+   * Stashed `agent.custom_tool_use` events, keyed on the id that
+   * `session.status_idle.stop_reason.event_ids` will name. Point 6 in the
+   * header: the reply is keyed on the idle, so the use event has to survive
+   * from its own arrival until then. Entries are deleted as they are dispatched
+   * so a re-emitted idle — which the platform sends with the remainder when
+   * fewer than all blocking events are resolved (events.d.ts:701-702) — cannot
+   * reply twice for the same call.
+   */
+  private readonly pendingCustomToolUse = new Map<string, AgentCustomToolUseEvent>();
+
   constructor(
     private readonly log: (line: string) => void,
     seen?: Set<string>,
@@ -347,6 +393,9 @@ class Trace {
         // hands the event on. A payload that fails the schema leaves
         // `decision` null — it is the caller that gets to answer with
         // `is_error: true` so the agent can correct.
+        //
+        // Capture stays HERE, on arrival, so `ConsumerResult.decision` is
+        // unchanged by point 6. Only the dispatch moved.
         const parsed = TriageDecision.safeParse(event.input);
         if (parsed.success) {
           this.decision = parsed.data;
@@ -357,7 +406,7 @@ class Trace {
               .join("; ")}`,
           );
         }
-        if (onCustomToolUse) await onCustomToolUse(event);
+        this.pendingCustomToolUse.set(event.id, event);
         break;
       }
 
@@ -399,9 +448,33 @@ class Trace {
         break;
 
       // ---- session lifecycle -------------------------------------------
-      case "session.status_idle":
+      case "session.status_idle": {
         this.log(`${glyph.note} session.status_idle  stop_reason=${event.stop_reason.type}`);
+
+        // Point 6 in the header. This is the documented dispatch point for the
+        // custom-tool reply, and it is `session.status_idle` only — dispatching
+        // on the `session.thread_status_idle` decoy as well would reply twice
+        // for every call.
+        if (event.stop_reason.type !== "requires_action" || !onCustomToolUse) break;
+
+        for (const blockingId of event.stop_reason.event_ids) {
+          const use = this.pendingCustomToolUse.get(blockingId);
+          if (!use) {
+            // `requires_action` carries no discriminator: tool confirmation
+            // blocks with the identical shape (permission-policies.md:653). An
+            // id we have no custom-tool-use event for is somebody else's block,
+            // and sending a `user.custom_tool_result` for it is a 400 that
+            // leaves the session parked.
+            this.log(
+              `${glyph.note} requires_action on ${blockingId} — not a custom tool call, not answering it`,
+            );
+            continue;
+          }
+          this.pendingCustomToolUse.delete(blockingId);
+          await onCustomToolUse(use);
+        }
         break;
+      }
 
       case "session.status_running":
       case "session.status_rescheduled":
@@ -594,7 +667,13 @@ export async function consumeEvents(opts: {
 
     // Exhaustion without a terminal event means the stream went away, not that
     // the session finished. Point 4 in the header.
-    for (let attempt = 1; reason === null && attempt <= maxReconnects; attempt++) {
+    //
+    // `!timedOut` is point 5, and it is load-bearing rather than defensive: both
+    // timers above are one-shot and already spent by the time the hard timer's
+    // abort lands here, so a reconnect after expiry is unbounded. A session
+    // parked at `requires_action` emits nothing, `drain(next)` never returns,
+    // and `finally` is never reached.
+    for (let attempt = 1; reason === null && !timedOut && attempt <= maxReconnects; attempt++) {
       log(
         `${glyph.note} stream ended with no terminal event — reconnect ${attempt}/${maxReconnects}`,
       );

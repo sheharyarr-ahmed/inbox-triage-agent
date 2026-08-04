@@ -143,6 +143,43 @@ export function sessionTotal(u: SessionUsage | undefined): number {
 }
 
 /**
+ * The grader's tally, DERIVED by subtracting the agent's spans from
+ * `session.usage` rather than read from the grader's own zero-filled usage
+ * block. See `report()` below and docs/DECISIONS.md D-017.
+ */
+function deriveGrader(agent: Tally, grader: Tally, session: SessionUsage): Tally {
+  return {
+    calls: grader.calls,
+    input: Math.max(0, (session.input_tokens ?? 0) - agent.input),
+    output: Math.max(0, (session.output_tokens ?? 0) - agent.output),
+    cacheRead: 0,
+    cacheWrite: 0,
+  };
+}
+
+/** Dollars, bracketed because the grading model is not attributable (D-017). */
+export type CostRange = { lo: number; hi: number };
+
+/**
+ * The same numbers `report()` prints, returned instead of logged, so a
+ * multi-ticket driver can accumulate them and stop before a budget is crossed.
+ *
+ * `lo` prices the derived grader share at Haiku, `hi` at Opus 5 — a 5x spread.
+ * Quote `hi` when deciding whether to spend: an estimate anchored on the floor
+ * of a 5x bracket is not an estimate.
+ */
+export function costRange(opts: {
+  agent: Tally;
+  grader: Tally;
+  session?: SessionUsage | undefined;
+}): CostRange {
+  const agentCost = price(opts.agent, HAIKU_4_5);
+  if (!opts.session) return { lo: agentCost, hi: agentCost };
+  const g = deriveGrader(opts.agent, opts.grader, opts.session);
+  return { lo: agentCost + price(g, HAIKU_4_5), hi: agentCost + price(g, OPUS_5) };
+}
+
+/**
  * Print the cost block.
  *
  * MEASURED IN PHASE 2, 2026-08-03 — this changes how the number is computed:
@@ -188,15 +225,9 @@ export function report(opts: {
   // Derived, because the grader's own usage block is not populated.
   const sIn = session.input_tokens ?? 0;
   const sOut = session.output_tokens ?? 0;
-  const gIn = Math.max(0, sIn - agent.input);
-  const gOut = Math.max(0, sOut - agent.output);
-  const graderTally: Tally = {
-    calls: grader.calls,
-    input: gIn,
-    output: gOut,
-    cacheRead: 0,
-    cacheWrite: 0,
-  };
+  const graderTally = deriveGrader(agent, grader, session);
+  const gIn = graderTally.input;
+  const gOut = graderTally.output;
   const graderLo = price(graderTally, HAIKU_4_5);
   const graderHi = price(graderTally, OPUS_5);
 

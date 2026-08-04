@@ -53,8 +53,14 @@ const Env = z.object({
   VAULT_ID: optionalId(),
   MEMORY_STORE_ID: optionalId(),
 
-  // Deferred to the phase that creates their input artifact.
+  // Produced during Phase 4.
   TRIAGE_SKILL_ID: optionalId(),
+  // A string, not a number: custom skill versions are epoch timestamps such as
+  // "1759178010641129" (skills-guide.md:50), not the "1" SPEC § Runtime
+  // configuration pins. See amendment A-9 in docs/DECISIONS.md.
+  TRIAGE_SKILL_VERSION: optionalId(),
+
+  // Deferred to the phase that creates its input artifact.
   RUBRIC_FILE_ID: optionalId(),
 });
 
@@ -70,8 +76,9 @@ const PRODUCED_BY: Record<OptionalEnvKey, string> = {
   AGENT_VERSION: "Phase 2 — bash scripts/apply-control-plane.sh",
   VAULT_ID: "Phase 2 — pnpm deploy",
   MEMORY_STORE_ID: "Phase 2 — pnpm deploy",
-  TRIAGE_SKILL_ID: "Phase 4 — pnpm deploy, once agent/skills/triage/SKILL.md exists",
-  RUBRIC_FILE_ID: "Phase 6 — pnpm deploy, once agent/rubric.md exists",
+  TRIAGE_SKILL_ID: "Phase 4 — pnpm provision, once agent/skills/triage/SKILL.md exists",
+  TRIAGE_SKILL_VERSION: "Phase 4 — pnpm provision, alongside TRIAGE_SKILL_ID",
+  RUBRIC_FILE_ID: "Phase 6 — pnpm provision, once agent/rubric.md exists",
 };
 
 function load(): Env {

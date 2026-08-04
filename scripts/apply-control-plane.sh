@@ -65,6 +65,36 @@ fi
 echo "ENVIRONMENT_ID=$ENVIRONMENT_ID"
 
 # ---------------------------------------------------------------------------
+# Render agent/agent.yaml
+#
+# `ant` reads the definition on stdin and does no interpolation of its own, so
+# an unsubstituted ${TRIAGE_SKILL_ID} would reach the API as a literal string.
+# That was harmless while agent.yaml had no `skills` key; Phase 4 adds one.
+#
+# Substitution is by explicit name rather than `envsubst`, which would expand
+# anything $-shaped anywhere in the file — including inside the `system` prompt,
+# where a stray expansion would silently rewrite a guardrail.
+# ---------------------------------------------------------------------------
+RENDERED="$(mktemp -t agent-yaml.XXXXXX)"
+trap 'rm -f "$RENDERED"' EXIT
+
+TRIAGE_SKILL_ID="$(read_env TRIAGE_SKILL_ID)"
+TRIAGE_SKILL_VERSION="$(read_env TRIAGE_SKILL_VERSION)"
+
+for var in TRIAGE_SKILL_ID TRIAGE_SKILL_VERSION; do
+  if grep -q "\${$var}" agent/agent.yaml && [ -z "${!var}" ]; then
+    echo "error: agent/agent.yaml references \${$var} but it is empty in $ENV_FILE." >&2
+    echo "       Run \`pnpm provision\` first — it creates the skill and records" >&2
+    echo "       both TRIAGE_SKILL_ID and TRIAGE_SKILL_VERSION." >&2
+    exit 1
+  fi
+done
+
+sed -e "s|\${TRIAGE_SKILL_ID}|${TRIAGE_SKILL_ID}|g" \
+    -e "s|\${TRIAGE_SKILL_VERSION}|${TRIAGE_SKILL_VERSION}|g" \
+    agent/agent.yaml > "$RENDERED"
+
+# ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
 AGENT_ID="$(read_env AGENT_ID)"
@@ -72,7 +102,7 @@ AGENT_VERSION="$(read_env AGENT_VERSION)"
 
 if [ -z "$AGENT_ID" ]; then
   echo "agent: creating from agent/agent.yaml"
-  agent_json="$(ant_ beta:agents create --format json < agent/agent.yaml)"
+  agent_json="$(ant_ beta:agents create --format json < "$RENDERED")"
 else
   # --version is optimistic concurrency: the request fails if it does not match
   # the server's current version. That is what we want for an interactive apply
@@ -84,7 +114,7 @@ else
     exit 1
   fi
   agent_json="$(ant_ beta:agents update --agent-id "$AGENT_ID" \
-    --version "$AGENT_VERSION" --format json < agent/agent.yaml)"
+    --version "$AGENT_VERSION" --format json < "$RENDERED")"
 fi
 
 AGENT_ID="$(jq -r '.id' <<< "$agent_json")"
@@ -107,5 +137,34 @@ echo "mcp_toolset permission_policy: ${mcp_policy:-none}"
 if [ "$mcp_policy" != "always_allow" ]; then
   echo "error: expected mcp_toolset permission_policy always_allow, got '${mcp_policy:-none}'." >&2
   echo "       Phase 4 will stall awaiting approval on every MCP call (D-012)." >&2
+  exit 1
+fi
+
+# The same discipline for the two Phase 4 additions: read them back off the
+# response rather than trusting that the apply did what the file says. An
+# unsubstituted placeholder is the failure this catches — it would otherwise
+# surface as a skill that never loads, with no error anywhere.
+skill_ids="$(jq -r '(.skills // []) | map(.skill_id // "UNSET") | join(",")' <<< "$agent_json")"
+custom_tools="$(jq -r '
+  (.tools // []) | map(select(.type == "custom")) | map(.name) | join(",")
+' <<< "$agent_json")"
+echo "skills:                        ${skill_ids:-none}"
+echo "custom tools:                  ${custom_tools:-none}"
+
+if grep -q '\${TRIAGE_SKILL_ID}' agent/agent.yaml; then
+  case "$skill_ids" in
+    skill_*) ;;
+    *)
+      echo "error: expected a skill_* id on the agent, got '${skill_ids:-none}'." >&2
+      echo "       An unsubstituted \${TRIAGE_SKILL_ID} reaches the API as a literal." >&2
+      exit 1
+      ;;
+  esac
+fi
+
+if grep -q 'name: submit_triage_decision' agent/agent.yaml \
+   && [ "$custom_tools" != "submit_triage_decision" ]; then
+  echo "error: expected the submit_triage_decision custom tool, got '${custom_tools:-none}'." >&2
+  echo "       Without it the agent has no way to return a TriageDecision." >&2
   exit 1
 fi

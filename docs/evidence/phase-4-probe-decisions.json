@@ -1,0 +1,33 @@
+{
+  "T-006": {
+    "session_id": "sesn_01UM9ZQj8NfYdcqV5BjDsuJ4",
+    "outcome": "decided",
+    "terminated_by": "end_turn",
+    "validation_failures": 0,
+    "mcp_calls": [
+      "lookup_account",
+      "lookup_orders"
+    ],
+    "grader": [
+      {
+        "result": "needs_revision",
+        "iteration": 0,
+        "explanation": "An independent grader found the following criteria are not fully met:\n\n- The decision names exactly one category from: billing, technical, account-access, refund-request, other. (not met): No deliverables could be found in the filesystem. After extensive searching through /mnt/session/outputs, /mnt/session, /workspace, and the broader filesystem, no triage decision document, JSON file, or any other output was located. Without access to the actual deliverables, I cannot verify that a category was named at all, let alone that it was one of the five specified categories.\n- Every claim in the decision cites a specific ticket field or a specific record returned by a tool. (not met): No deliverables could be found to review. Without access to the actual triage decision, I cannot verify whether the agent included proper citations from ticket fields (like ticket.subject, ticket.body) or tool records (like lookup_account.refund_window_status, lookup_orders.status).\n- Escalating a genuinely ambiguous or adversarial ticket is a full pass, not a shortfall. (not met): No deliverables could be found to review. Without the actual triage decision, I cannot assess whether the agent correctly escalated this ticket, which appears to involve an alleged verbal promise about priority support that contradicts the support team's statement, customer claims of product failure, and a refund demand with urgent tone - all potentially ambiguous or requiring human judgment.\n\nPlease revise your work to address these gaps."
+      },
+      {
+        "result": "satisfied",
+        "iteration": 1,
+        "explanation": "An independent grader found all criteria met:\n\n- The decision names exactly one category from: billing, technical, account-access, refund-request, other. (met): The deliverable clearly specifies 'category': 'billing' in the JSON output, which is one of the allowed categories.\n- Every claim in the decision cites a specific ticket field or a specific record returned by a tool. (met): All specific factual claims in the escalation_reason are cited: (1) 'verbal promise from a sales rep' cites ticket.body field; (2) 'on a free plan' cites lookup_account.plan_tier verified as 'free'; (3) 'no orders on file' cites lookup_orders.found=true with orders=[]; (4) 'refund window status of not_applicable' cites lookup_account.refund_window_status. All citations are correct per verified tool responses.\n- Escalating a genuinely ambiguous or adversarial ticket is a full pass, not a shortfall. Never ask for an escalation to be converted into a resolution. (met): The agent correctly identified this as a genuinely adversarial ticket with ambiguous claims (unverifiable verbal promise, vague technical issue, urgent refund threat) and chose 'disposition': 'escalate'. The escalation reason appropriately explains why human investigation is needed. No attempt was made to force a resolution, which is correct."
+      }
+    ],
+    "decision": {
+      "ticket_id": "T-006",
+      "category": "billing",
+      "disposition": "escalate",
+      "citations": [],
+      "draft_reply": null,
+      "escalation_reason": "The ticket rests on a claim of a verbal promise from a sales rep regarding a priority support add-on included with the account. The account records show the customer is on a free plan with no orders and no refund window. This claim of a verbal agreement cannot be verified against the account records and requires human investigation to determine whether an add-on was actually promised, whether the promise can be honored, and what remediation is appropriate. Additionally, the technical issue referenced is vague and undefined.",
+      "suspected_injection": false
+    }
+  }
+}

@@ -278,7 +278,9 @@ Per ticket, `run.ts`:
 3. Send `user.define_outcome` with the ticket body in `description`, `rubric` as `{type:'file', file_id}`, and `max_iterations: 3`. No separate `user.message`; the outcome event starts the work.
 4. Drain the stream through `events.ts` until terminal.
 5. Read the memory store host-side and assert the expected file was written.
-6. Poll `sessions.retrieve` until `status !== 'running'`, then archive. Archiving straight off the idle event intermittently returns 400 because the stream emits idle slightly before the queryable status catches up.
+6. Poll `sessions.retrieve` until `status` is `idle` or `terminated`, then archive.
+
+   *Amended 2026-08-04 (A-3, accepted).* The rule is documented, not merely empirical: `session-operations.md:531` — *"A `running` session cannot be archived; send an interrupt event if you need to archive it immediately."* The original text attributed the 400 to the stream emitting idle before the queryable status catches up; that cause remains undocumented and the poll-then-archive remedy is correct either way. The predicate is also tightened from `status !== 'running'`, which admits the transient `rescheduling` state (`session-operations.md:17`) — a retry the session can come back out of, not a resting place to archive from. Archiving is additionally the documented escape for a session still parked on an unresolved `requires_action`.
 
 **Ticket delivery.** The ticket body travels as outcome `description` text sent from the host. The injection in T-008 therefore arrives through the canonical vector for this workload: untrusted content in a caller-supplied turn. No file mount, no queue-selection logic for the agent to get wrong.
 
@@ -288,7 +290,13 @@ Per ticket, `run.ts`:
 
 `events.ts` is the piece most likely to be mistaken for a print loop, so it is specified concretely.
 
-**Terminal gate.** Break on `session.status_terminated`, or on `session.status_idle` when `stop_reason.type !== 'requires_action'`. Idle alone is not terminal. The session idles transiently while waiting for the custom tool result, and a loop that breaks on bare idle would abandon every ticket at the decision step.
+**Terminal gate.** Break on `session.status_terminated`, on `session.deleted`, or on `session.status_idle` when `stop_reason.type !== 'requires_action'`. Idle alone is not terminal. The session idles transiently while waiting for the custom tool result, and a loop that breaks on bare idle would abandon every ticket at the decision step.
+
+*Amended 2026-08-04 (A-5, accepted).* `session.deleted` is the third terminal condition and the original text named only two. The SDK states it outright (`events.d.ts:650-652`): the event *"Terminates any active event stream — no further events will be emitted for this session."* A session deleted mid-run would otherwise leave the loop waiting on a dead socket until the wall clock fired, recording a ticket as timed out for a reason unrelated to the ticket. It maps to `terminatedBy: 'terminated'`; a distinct `'deleted'` member was considered and declined, because `ConsumerResult.terminatedBy` is a published contract in § Files and nothing downstream needs the distinction.
+
+**The reply is keyed on the idle event, not on the tool call's arrival.** `agent.custom_tool_use` is stashed as it arrives; the `user.custom_tool_result` is sent when `session.status_idle` names its id in `stop_reason.event_ids`. `events.d.ts:1184-1190` is explicit that the id to echo back is found there, and replying on arrival posts a result while the session is still `running`. Three details are load-bearing: `requires_action` carries **no discriminator** — tool confirmation blocks with an identical shape — so each blocking id is type-checked before a custom-tool result is sent for it; dispatch is on `session.status_idle` only, never the `session.thread_status_idle` decoy, or every reply doubles; and `event_ids` is iterated rather than indexed at `[0]`, so two calls in one turn resolve instead of deadlocking. See D-030.
+
+**Reconnect must not outlive the wall clock.** The reconnect path below is guarded on the run not having already timed out. Both timers are one-shot, so after expiry a reconnect is unbounded — and a session parked at `requires_action` emits nothing, so the drain never returns. See D-029.
 
 **Reconnect.** The stream has no replay. On any reconnect: open the new stream first, then page `sessions.events.list()` for history, dedupe by `event.id`, then tail. The dedupe gates handling only, never the terminal check, or a terminal event already present in history is skipped by `continue` and the loop never exits.
 
@@ -375,7 +383,9 @@ Build on `claude-haiku-4-5`. If T-006 or T-008 fail rubric criterion 3 or 5 acro
 
 Seven controls, in order of leverage:
 
-1. **Measure before scaling.** `run.ts` accumulates `span.model_request_end.model_usage` and `span.outcome_evaluation_end.usage` and prints a per-run dollar estimate on exit. The first single-ticket run in Phase 2 produces a real number. Extrapolate from that number before committing to a ten-ticket pattern. Do not guess.
+1. **Measure before scaling.** `run.ts` prints a per-run dollar figure on exit, and extrapolation happens from a measured single-ticket run, never from a guess, before committing to a ten-ticket pattern.
+
+   *Amended 2026-08-04 (A-1, accepted; refined by D-034).* The original text said to sum `span.model_request_end.model_usage` and `span.outcome_evaluation_end.usage`. That method **under-reports**: the second field is zero-filled in practice, so it misses the grader entirely — $0.0116 reported against a $0.0242–0.0744 reality on the run that exposed it (D-017). `session.usage` is authoritative instead. Phase 4 then found a better source than either: the `session.usage` **event** carries a platform-reported `list_cost` (`{"amount": "0.1", "currency": "USD"}`), which no reference page documents and which removes the need to split agent from grader by subtraction or to bracket the result. Where a bracket is still printed, quote its **ceiling** — the floor of a 5× Haiku-to-Opus spread is not an estimate. See D-034.
 2. **Develop against a subset.** Phase 4 and Phase 6 iterate on **three tickets only**: T-006, T-008, T-009. Those are the gates. Full ten-ticket runs happen at phase acceptance, not during iteration.
 3. **`max_iterations: 2` during development, 3 for the final gate run.** Cuts grader spend by a third while iterating. The three-pass cap only has to hold on the run that counts.
 4. **Outcomes on gate tickets only during development.** Full outcome coverage across all ten is a final-run property, and it is what §Goal claims. It is not needed to debug the SSE consumer.
@@ -514,7 +524,7 @@ Updated at every phase boundary. A fresh session reads this first to learn where
 | 1 | MCP server standalone | Deployed server answers tools-list and both tools over HTTPS, token required, clean not-found path | ✅ **Closed 2026-08-03** — live at `https://mcp-server-alpha-snowy.vercel.app/mcp`; all six checks pass over HTTPS; 32 tests green |
 | 2 | Hello world on the runtime | A session runs end to end against the real account and streams events back | ✅ **Closed 2026-08-03** — `sesn_01ARzSiW9Hnm5hr29M7CA4w1` ran end to end, 13 events streamed, terminal gate fired on `end_turn`, archived clean. Outcomes smoke test **passed** (Tier B not needed). D-012 closed and verified. Vault → MCP path proven end to end. Spend: **$0.035–0.085** of $5 |
 | 3 | The SSE consumer | Consumer survives a full session incl. one tool call, prints a readable trace, unknown event types do not crash it | ✅ **Closed 2026-08-04** — `src/events.ts` extracted; 21 new tests, 61 green; both inline gates deleted, one gate remains and it is under test. Three mutation checks confirm the suite catches the bugs it claims to. Spend: **$0.00** |
-| 4 | Triage core plus the skill | All ten tickets process. T-006 escalates. T-008 refused and escalated. T-009 fails gracefully | ⬜ |
+| 4 | Triage core plus the skill | All ten tickets process. T-006 escalates. T-008 refused and escalated. T-009 fails gracefully | ✅ **Closed 2026-08-04** — 10/10 decided; T-006 escalate; T-008 escalate + `suspected_injection: true`; T-009 escalate, `draft_reply: null`, citing `lookup_account.found: false`. Agent **v4**, skill `skill_01GUEGUQoq8ZYhEVZueMxb7o`. **A-4 confirmed and mitigated** (D-032). Two `events.ts` bugs fixed (D-029, D-030); 82 tests green. Spend: **~$0.55**, measured from the platform's own `list_cost` (D-034), not derived |
 | 5 | Memory | Memory written in session A provably read and referenced in session B, proven in the trace | ⬜ |
 | 6 | Outcomes and the grader | Per-criterion rubric score for at least T-006 and T-008; iteration cap holds | ⬜ |
 | 7 | Docs, tests, verification | `pnpm -s test` green; Stop hook blocks a dirty turn; commit hook rejects an AI-attribution string | ⬜ |

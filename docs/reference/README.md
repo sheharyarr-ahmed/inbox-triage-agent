@@ -35,6 +35,9 @@ curl -fsSL https://platform.claude.com/docs/en/managed-agents/<slug>.md \
 | `permission-policies.md` ‡ | Permission policies | `…/managed-agents/permission-policies` |
 | `reference.md` ‡ | Reference | `…/managed-agents/reference` |
 | `session-operations.md` ‡ | Session operations | `…/managed-agents/session-operations` |
+| `skill-authoring-overview.md` ‖ | Agent Skills overview | `…/agents-and-tools/agent-skills/overview` |
+| `skill-authoring-best-practices.md` ‖ | Skill authoring best practices | `…/agents-and-tools/agent-skills/best-practices` |
+| `skills-guide.md` ‖ | Skills guide | `…/build-with-claude/skills-guide` |
 
 † **Beyond SPEC § Verification.** SPEC lists nine pages; these three were added
 because Phase 2 writes `agent/agent.yaml` and `agent/environment.yaml` against
@@ -77,6 +80,31 @@ See `docs/DECISIONS.md` D-018.
   merely the intermittent 400 SPEC describes. SPEC's stated *cause* — the stream
   emitting idle before the queryable status catches up — remains empirical and
   undocumented; the poll-then-archive remedy is now grounded either way.
+
+‖ **Added 2026-08-04, Phase 4. The snapshot is now eighteen.** These are the
+*authoring* pages the note below deliberately excluded — correctly, while no
+phase wrote a skill. Phase 4 writes `agent/skills/triage/SKILL.md`, and the
+fifteen-page snapshot documents **zero** of the required frontmatter fields, so
+authoring from it would have meant authoring from training data.
+
+- `skill-authoring-overview.md` — the `SKILL.md` contract. Line 209: *"**Required
+  fields:** `name` and `description`"*. `name` ≤64 chars, lowercase letters,
+  numbers and hyphens only, no XML tags, and may not contain the reserved words
+  "anthropic" or "claude" (`:213-218`). `description` non-empty, ≤1024 chars, no
+  XML tags, and *"must include both what the Skill does and when Claude should
+  use it"* (`:220-226`).
+- `skill-authoring-best-practices.md` — three rules this build follows.
+  **Gerund-form names** are the recommended convention (`:170`), noun phrases
+  only an "acceptable alternative" (`:184`), hence `triaging-support-tickets`.
+  **Descriptions are third person** (`:206`): *"The description is injected into
+  the system prompt, and inconsistent point-of-view can cause discovery
+  problems."* And concision is costed, not stylistic (`:22`): metadata is
+  pre-loaded for every skill, but once `SKILL.md` is read *"every token competes
+  with conversation history and other context."*
+- `skills-guide.md` — closes the version-format question `skills.md:191` defers.
+  Line 50, custom-skill column: *"Epoch timestamp: `1759178010641129` or
+  `latest`"*. **This contradicts `SPEC.md:217`**, which pins `version: "1"`. See
+  amendment A-9 in `docs/DECISIONS.md`.
 
 ### Two pages that are *not* these
 
