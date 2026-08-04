@@ -21,7 +21,8 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { consoleTraceUrl, env, requireIds } from "./config.js";
-import { addUsage, emptyTally, report, type SessionUsage } from "./cost.js";
+import { emptyTally, report, tallyOf, type SessionUsage } from "./cost.js";
+import { SpendLimitReached, consumeSession, type ConsumerResult } from "./events.js";
 
 /** Wall clock. Nothing here should take a minute; a stuck session must not bill. */
 const DEADLINE_MS = 4 * 60_000;
@@ -68,9 +69,6 @@ async function main(): Promise<void> {
   const { ENVIRONMENT_ID } = requireIds(["ENVIRONMENT_ID"]);
   const client = new Anthropic();
 
-  const agentTally = emptyTally();
-  const graderTally = emptyTally();
-
   console.log("── outcomes smoke test ".padEnd(56, "─"));
   console.log(`  environment   ${ENVIRONMENT_ID}`);
 
@@ -87,10 +85,8 @@ async function main(): Promise<void> {
   console.log(`  throwaway agent ${agent.id} v${agent.version}`);
 
   let sessionId: string | undefined;
-  let sawStartEvent = false;
   let acceptedAs: string | undefined;
-  let outcomeId: string | undefined;
-  let terminatedBy = "timeout";
+  let result: ConsumerResult | undefined;
   const seenTypes = new Map<string, number>();
 
   try {
@@ -106,33 +102,52 @@ async function main(): Promise<void> {
 
     // 3. STREAM FIRST, THEN SEND. events-and-streaming.md:369 — only events
     //    emitted after the stream opens are delivered.
-    const stream = await client.beta.sessions.events.stream(session.id);
+    //
+    //    PHASE 3: the drain and its terminal gate are src/events.ts now. This
+    //    file used to carry a byte-identical second copy of the gate; there is
+    //    exactly one, and it is under test.
+    const consumed = consumeSession({
+      client,
+      sessionId: session.id,
+      deadlineMs: DEADLINE_MS,
 
-    const abort = setTimeout(() => stream.controller.abort(), DEADLINE_MS);
+      // `onOpen` runs once the stream is established and before the first event
+      // is read, so the define_outcome is ordered after the stream rather than
+      // racing it.
+      onOpen: async () => {
+        try {
+          await client.beta.sessions.events.send(session.id, {
+            events: [
+              {
+                type: "user.define_outcome",
+                description: DESCRIPTION,
+                rubric: { type: "text", content: RUBRIC },
+                // max_iterations deliberately OMITTED. Default is 3, max is 20,
+                // and the MINIMUM is undocumented — `1` would be a guess that
+                // could 400. The session is archived long before it could
+                // iterate, so the default costs nothing here.
+              },
+            ],
+          });
+        } catch (err) {
+          dumpError("user.define_outcome", err);
+          console.error(
+            "\n   THIS IS THE TIER B SIGNAL. SPEC § Open before Phase 1: a rejection\n" +
+              "   here means the outcomes-and-grader half of the build is unavailable.\n" +
+              "   Stopping. Do not proceed to the hello-world run.\n",
+          );
+          throw err;
+        }
+      },
 
-    try {
-      await client.beta.sessions.events.send(session.id, {
-        events: [
-          {
-            type: "user.define_outcome",
-            description: DESCRIPTION,
-            rubric: { type: "text", content: RUBRIC },
-            // max_iterations deliberately OMITTED. Default is 3, max is 20, and
-            // the MINIMUM is undocumented — `1` would be a guess that could 400.
-            // The session is archived long before it could iterate, so the
-            // default costs nothing here.
-          },
-        ],
-      });
-    } catch (err) {
-      dumpError("user.define_outcome", err);
-      console.error(
-        "\n   THIS IS THE TIER B SIGNAL. SPEC § Open before Phase 1: a rejection\n" +
-          "   here means the outcomes-and-grader half of the build is unavailable.\n" +
-          "   Stopping. Do not proceed to the hello-world run.\n",
-      );
-      throw err;
-    }
+      onCustomToolUse: async () => {
+        // The throwaway agent declares no custom tool.
+      },
+      onEvent: (event) => {
+        seenTypes.set(event.type, (seenTypes.get(event.type) ?? 0) + 1);
+      },
+      log: (line) => console.log(` ${line}`),
+    });
 
     // 4. Acceptance poll, running alongside the drain. This is the earlier and
     //    cheaper of the two signals and does not depend on the SSE consumer:
@@ -160,84 +175,17 @@ async function main(): Promise<void> {
     })();
 
     // 5. Drain.
-    for await (const event of stream) {
-      seenTypes.set(event.type, (seenTypes.get(event.type) ?? 0) + 1);
-
-      switch (event.type) {
-        case "user.define_outcome":
-          outcomeId = event.outcome_id;
-          console.log(
-            `  echo  user.define_outcome  outcome_id=${event.outcome_id}  ` +
-              `processed_at=${event.processed_at ?? "null"}`,
-          );
-          break;
-
-        case "span.outcome_evaluation_start":
-          sawStartEvent = true;
-          console.log(
-            `  ✓ span.outcome_evaluation_start  iteration=${event.iteration}  outcome=${event.outcome_id}`,
-          );
-          break;
-
-        case "span.outcome_evaluation_end":
-          addUsage(graderTally, event.usage);
-          console.log(
-            `  ✓ span.outcome_evaluation_end    iteration=${event.iteration}  result=${event.result}`,
-          );
-          console.log(`      ${event.explanation.slice(0, 300)}`);
-          break;
-
-        case "span.model_request_end":
-          addUsage(agentTally, event.model_usage);
-          break;
-
-        case "agent.message":
-          for (const block of event.content) {
-            if (block.type === "text") {
-              console.log(`  agent: ${block.text.trim().slice(0, 200)}`);
-            }
-          }
-          break;
-
-        case "session.error": {
-          const e = event.error;
-          console.error(`  !! session.error  ${e.type}: ${e.message}`);
-          if (e.type === "billing_error") {
-            console.error(
-              "     Spend limit reached. Retrying with the same credentials will not succeed.",
-            );
-            terminatedBy = "billing_error";
-            stream.controller.abort();
-          }
-          break;
-        }
-
-        case "session.status_terminated":
-          terminatedBy = "terminated";
-          break;
-
-        case "session.status_idle":
-          if (event.stop_reason.type !== "requires_action") {
-            terminatedBy = event.stop_reason.type;
-          }
-          break;
-
-        default:
-          break;
+    try {
+      result = await consumed;
+    } catch (err) {
+      if (err instanceof SpendLimitReached) {
+        console.error(`\n  !! ${err.message}`);
+        result = err.partial;
+      } else {
+        throw err;
       }
-
-      // Terminal gate. Idle alone is NOT terminal (SPEC § The SSE consumer).
-      if (event.type === "session.status_terminated") break;
-      if (
-        event.type === "session.status_idle" &&
-        event.stop_reason.type !== "requires_action"
-      ) {
-        break;
-      }
-      if (terminatedBy === "billing_error") break;
     }
 
-    clearTimeout(abort);
     await poller;
   } finally {
     // 6. Teardown. session-operations.md:531 — "A `running` session cannot be
@@ -257,8 +205,15 @@ async function main(): Promise<void> {
         dumpError("sessions.archive", err);
       }
       report({
-        agent: agentTally,
-        grader: graderTally,
+        agent: result
+          ? tallyOf(
+              result.usage,
+              result.events.filter((e) => e.type === "span.model_request_end").length,
+            )
+          : emptyTally(),
+        // Zero-filled by the platform, so `report()` derives the grader's real
+        // share from session.usage. Only the evaluation COUNT is usable here.
+        grader: { ...emptyTally(), calls: result?.outcomeEvaluations.length ?? 0 },
         session: sessionUsage,
         label: "smoke",
       });
@@ -277,11 +232,24 @@ async function main(): Promise<void> {
     console.log(`  ${String(n).padStart(3)}  ${type}`);
   }
 
+  // Derived from the consumed trace rather than accumulated by a second loop.
+  const events = result?.events ?? [];
+  const sawStartEvent = events.some((e) => e.type === "span.outcome_evaluation_start");
+  const outcomeId =
+    result?.outcomeEvaluations[0]?.outcomeId ??
+    events.find((e) => e.type === "user.define_outcome")?.outcome_id;
+
   console.log("\n── gate ".padEnd(56, "─"));
   console.log(`  outcome accepted (poll)        ${acceptedAs ?? "NO"}`);
   console.log(`  span.outcome_evaluation_start  ${sawStartEvent ? "YES" : "NO"}`);
   console.log(`  outcome_id                     ${outcomeId ?? "(none)"}`);
-  console.log(`  terminated by                  ${terminatedBy}`);
+  console.log(`  terminated by                  ${result?.terminatedBy ?? "timeout"}`);
+  for (const evaluation of result?.outcomeEvaluations ?? []) {
+    console.log(
+      `  evaluation #${evaluation.iteration}                  ${evaluation.result}  ` +
+        `${evaluation.explanation.slice(0, 200)}`,
+    );
+  }
 
   if (!sawStartEvent && acceptedAs === undefined) {
     console.error(

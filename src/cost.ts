@@ -82,6 +82,30 @@ export function addUsage(tally: Tally, u: SpanUsage): void {
 export const totalTokens = (t: Tally): number =>
   t.input + t.output + t.cacheRead + t.cacheWrite;
 
+/**
+ * Adapt `ConsumerResult.usage` to the `Tally` shape `report()` takes.
+ *
+ * SPEC § Files names that field's members `cacheRead` / `cacheCreation`, while
+ * `Tally` — which predates it — uses `cacheRead` / `cacheWrite` and carries a
+ * `calls` count the consumer's shape has no room for. Same four numbers, two
+ * names; this is the one place the rename lives.
+ */
+export const tallyOf = (
+  usage: Readonly<{
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheCreation: number;
+  }>,
+  calls: number,
+): Tally => ({
+  calls,
+  input: usage.input,
+  output: usage.output,
+  cacheRead: usage.cacheRead,
+  cacheWrite: usage.cacheCreation,
+});
+
 export function price(t: Tally, r: Rates): number {
   return (
     (t.input * r.input +

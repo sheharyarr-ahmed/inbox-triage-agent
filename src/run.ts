@@ -4,10 +4,17 @@
  * SPEC § Session protocol → Phase ledger, Phase 2:
  *   "A session runs end to end against the real account and streams events back."
  *
- * This is also the skeleton of the ten-ticket driver. The terminal gate is
- * written correctly here so Phase 3 EXTRACTS it into src/events.ts rather than
- * rewriting it; reconnect, history dedupe, and the full ConsumerResult shape
- * are Phase 3's scope and are deliberately absent.
+ * This is also the skeleton of the ten-ticket driver.
+ *
+ * PHASE 3 REFACTOR. The terminal gate this file used to carry inline is now
+ * src/events.ts `terminalReason`, extracted rather than rewritten, and the drain
+ * loop is `consumeSession()`. What used to be forty lines of switch here is a
+ * single call plus the reporting this phase is actually about. Reconnect,
+ * history dedupe, the wall-clock interrupt and the full ConsumerResult shape all
+ * came with it; none of them existed in the Phase 2 version.
+ *
+ * The acceptance output below is unchanged, so the Phase 2 evidence it produced
+ * stays comparable.
  *
  * No outcome is defined here. The smoke test already proved the outcomes
  * primitive, and leaving the grader out keeps this run cheap AND yields a clean
@@ -22,7 +29,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { REPO_ROOT, consoleTraceUrl, requireIds } from "./config.js";
-import { addUsage, emptyTally, report, type SessionUsage } from "./cost.js";
+import { emptyTally, report, tallyOf, type SessionUsage } from "./cost.js";
+import { SpendLimitReached, consumeSession, type ConsumerResult } from "./events.js";
 
 /** Per-session wall clock. SPEC § Bounded iteration: a stuck session must not bill. */
 const DEADLINE_MS = 5 * 60_000;
@@ -66,18 +74,6 @@ async function main(): Promise<void> {
   mkdirSync(resolve(REPO_ROOT, "docs/evidence"), { recursive: true });
   rmSync(EVIDENCE, { force: true });
 
-  const agentTally = emptyTally();
-  const graderTally = emptyTally();
-  const seenTypes = new Map<string, number>();
-
-  // Findings this run is here to capture beyond the acceptance criterion.
-  let mcpToolUses = 0;
-  let mcpAuthFailed = false;
-  let sawMcpResult = false;
-  let clientEventProcessedAt: string | null | undefined;
-  let terminatedBy = "timeout";
-  let interrupted = false;
-
   console.log("── phase 2 · hello world ".padEnd(56, "─"));
   console.log(`  agent         ${ids.AGENT_ID} v${ids.AGENT_VERSION} (pinned)`);
   console.log(`  environment   ${ids.ENVIRONMENT_ID}`);
@@ -97,129 +93,68 @@ async function main(): Promise<void> {
   console.log(`  session       ${session.id}  (status ${session.status})`);
   console.log(`  trace         ${consoleTraceUrl(session.id)}\n`);
 
-  // STREAM FIRST, THEN SEND. events-and-streaming.md:369 — only events emitted
-  // after the stream opens are delivered. Creating with initial_events would
-  // start the session before the consumer attached and batch the opening
-  // events, degrading exactly the trace Phase 3 needs as its fixture.
-  const stream = await client.beta.sessions.events.stream(session.id);
-  const abort = setTimeout(() => {
-    interrupted = true;
-    stream.controller.abort();
-  }, DEADLINE_MS);
+  const seenTypes = new Map<string, number>();
+  let result: ConsumerResult | undefined;
 
   try {
-    await client.beta.sessions.events.send(session.id, {
-      events: [{ type: "user.message", content: [{ type: "text", text: MESSAGE }] }],
+    result = await consumeSession({
+      client,
+      sessionId: session.id,
+      deadlineMs: DEADLINE_MS,
+
+      // STREAM FIRST, THEN SEND. events-and-streaming.md:369 — only events
+      // emitted after the stream opens are delivered. `onOpen` runs once the
+      // stream is established and before the first event is read, so this is
+      // ordered, not raced. Firing the send alongside the consumer instead
+      // would be the race SPEC § Session topology step 2 exists to prevent.
+      onOpen: async () => {
+        await client.beta.sessions.events.send(session.id, {
+          events: [{ type: "user.message", content: [{ type: "text", text: MESSAGE }] }],
+        });
+      },
+
+      onCustomToolUse: async () => {
+        // Phase 2's agent version declares no custom tool (D-014), so this
+        // cannot fire yet. Phase 4 supplies the validate-and-reply half.
+      },
+
+      // Persist as events arrive rather than from the returned array: the run
+      // that throws is the run whose trace matters most.
+      onEvent: (event) => {
+        appendFileSync(EVIDENCE, `${JSON.stringify(event)}\n`);
+        seenTypes.set(event.type, (seenTypes.get(event.type) ?? 0) + 1);
+      },
+
+      log: (line) => console.log(` ${line}`),
     });
-
-    for await (const event of stream) {
-      appendFileSync(EVIDENCE, `${JSON.stringify(event)}\n`);
-      seenTypes.set(event.type, (seenTypes.get(event.type) ?? 0) + 1);
-
-      switch (event.type) {
-        case "user.message":
-          // SPEC § processed_at claims client-sent events appear first with
-          // null. Record what actually arrives.
-          clientEventProcessedAt = event.processed_at;
-          console.log(`  echo  user.message  processed_at=${event.processed_at ?? "null"}`);
-          break;
-
-        case "agent.mcp_tool_use":
-          mcpToolUses += 1;
-          console.log(
-            `  → mcp   ${event.mcp_server_name}.${event.name}  ${JSON.stringify(event.input)}`,
-          );
-          break;
-
-        case "agent.mcp_tool_result": {
-          sawMcpResult = true;
-          const text = (event.content ?? [])
-            .map((b) => (b.type === "text" ? b.text : `[${b.type}]`))
-            .join(" ")
-            .slice(0, 400);
-          console.log(`  ← mcp   is_error=${event.is_error ?? false}  ${text}`);
-          break;
-        }
-
-        case "agent.tool_use":
-          console.log(`  → tool  ${event.name}`);
-          break;
-
-        case "agent.message":
-          for (const block of event.content) {
-            if (block.type === "text") console.log(`\n  agent: ${block.text.trim()}\n`);
-          }
-          break;
-
-        case "span.model_request_end":
-          addUsage(agentTally, event.model_usage);
-          break;
-
-        case "span.outcome_evaluation_end":
-          addUsage(graderTally, event.usage);
-          break;
-
-        case "session.error": {
-          const e = event.error;
-          console.error(`  !! session.error  ${e.type}: ${e.message}`);
-          if (e.type === "mcp_authentication_failed_error") {
-            mcpAuthFailed = true;
-            console.error(
-              `     server=${e.mcp_server_name} — the vault credential did not match ` +
-                `or was rejected. mcp-connector.md:368: an unmatched credential means ` +
-                `the connection is attempted UNAUTHENTICATED rather than failing loudly.`,
-            );
-          }
-          if (e.type === "billing_error") {
-            // Under a $5 hard cap this is the failure that ends a build session.
-            // Its own docstring: retrying with the same credentials will not succeed.
-            console.error(
-              "     SPEND LIMIT REACHED. Retrying with the same credentials will not " +
-                "succeed. Stopping immediately.",
-            );
-            terminatedBy = "billing_error";
-            stream.controller.abort();
-          }
-          break;
-        }
-
-        case "session.status_terminated":
-          terminatedBy = "terminated";
-          break;
-
-        case "session.status_idle":
-          if (event.stop_reason.type !== "requires_action") {
-            terminatedBy = event.stop_reason.type;
-          }
-          break;
-
-        default:
-          // Unknown types log and continue — SPEC § The SSE consumer. Proven
-          // against a synthetic unrecognised event in Phase 3.
-          break;
-      }
-
-      // ---- TERMINAL GATE -------------------------------------------------
-      // Break on terminated, or on idle when the stop reason is NOT
-      // requires_action. Idle alone is not terminal: the session idles
-      // transiently while waiting for a custom tool result, and a loop that
-      // breaks on bare idle abandons every ticket at the decision step from
-      // Phase 4 onward. The doc's own headline example has exactly that bug.
-      if (event.type === "session.status_terminated") break;
-      if (
-        event.type === "session.status_idle" &&
-        event.stop_reason.type !== "requires_action"
-      ) {
-        break;
-      }
-      if (terminatedBy === "billing_error") break;
-    }
   } catch (err) {
-    dumpError("session drain", err);
+    if (err instanceof SpendLimitReached) {
+      console.error(`\n  !! ${err.message}\n     Stopping immediately.`);
+      result = err.partial;
+    } else {
+      dumpError("session drain", err);
+    }
     process.exitCode = 1;
-  } finally {
-    clearTimeout(abort);
   }
+
+  // Findings this run is here to capture beyond the acceptance criterion, now
+  // derived from the consumed trace rather than accumulated by a second loop.
+  const events = result?.events ?? [];
+  const mcpToolUses = events.filter((e) => e.type === "agent.mcp_tool_use").length;
+  const sawMcpResult = events.some((e) => e.type === "agent.mcp_tool_result");
+  const mcpAuthFailed = events.some(
+    (e) => e.type === "session.error" && e.error.type === "mcp_authentication_failed_error",
+  );
+  const clientEcho = events.find((e) => e.type === "user.message");
+  const clientEventProcessedAt = clientEcho?.processed_at;
+  const terminatedBy = result?.terminatedBy ?? "timeout";
+
+  const agentTally = result
+    ? tallyOf(result.usage, events.filter((e) => e.type === "span.model_request_end").length)
+    : emptyTally();
+  // Zero-filled by the platform, so `report()` derives the grader's real share
+  // from session.usage. Only the evaluation COUNT is usable here — D-017.
+  const graderTally = { ...emptyTally(), calls: result?.outcomeEvaluations.length ?? 0 };
 
   // Teardown. session-operations.md:531 — "A `running` session cannot be
   // archived", so poll the queryable status first. The stream emits idle
@@ -278,17 +213,20 @@ async function main(): Promise<void> {
     }`,
   );
   console.log(
+    // Amendment A-2, accepted 2026-08-04: `processed_at` is null only while an
+    // event is genuinely queued behind earlier ones, not unconditionally on
+    // first sighting. Either reading is normal; neither is a state input.
     `  user.message processed_at        ${
       clientEventProcessedAt === undefined
         ? "(no echo observed)"
         : clientEventProcessedAt === null
-          ? "null on first sighting (matches SPEC)"
-          : `${clientEventProcessedAt} — populated on FIRST sighting`
+          ? "null on first sighting — queued behind earlier events"
+          : `${clientEventProcessedAt} — populated on FIRST sighting (nothing queued)`
     }`,
   );
   console.log(`  trace written                    ${EVIDENCE}`);
 
-  const accepted = rows.every(([, pass]) => pass) && !interrupted;
+  const accepted = rows.every(([, pass]) => pass);
   console.log(
     `\n  ${accepted ? "ACCEPTANCE MET" : "ACCEPTANCE NOT MET"} — Phase 2${accepted ? "" : " is not closed"}`,
   );

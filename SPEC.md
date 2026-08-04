@@ -296,7 +296,9 @@ Per ticket, `run.ts`:
 
 **Instrumentation.** Log per event: tool name and duration from `agent.tool_use` and `agent.mcp_tool_use` paired with their result events; token usage from `span.model_request_end.model_usage`; grader progress from `span.outcome_evaluation_start`, `_ongoing`, and `_end`, including `result`, `explanation`, `iteration`, and the `usage` block that is the grader cost telemetry.
 
-**`processed_at`.** Client-sent events appear twice, first with `processed_at: null` while queued and again once processed. The exception is `user.define_outcome` and `user.custom_tool_result`, which are processed on receipt and echoed back with `processed_at` already populated. A pending-state UI keyed on "first sighting is always null" never clears for those two.
+**`processed_at`.** Every persisted event carries a `processed_at` set when the event finishes processing. On events you send, it is null **only while that event is still queued behind earlier events** — not unconditionally on first sighting. Three events are processed on receipt and echoed back with `processed_at` already populated: `user.define_outcome`, `user.custom_tool_result`, and `user.tool_result` (the last is `self_hosted`-only and off this build's path). Treat `processed_at` as informational: it is never a state-machine input and never a dedupe key. `event.id` is what handles repeats.
+
+*Amended 2026-08-04 (D-024, formerly amendment A-2).* The original text said client-sent events "appear twice, first with `processed_at: null`", and named two exceptions rather than three. Both halves were wrong. `events-and-streaming.md:22` makes the null conditional on a backlog and names three exceptions; the SDK corroborates independently — `UserDefineOutcomeEvent.processed_at` is a required `string` while `UserMessageEvent.processed_at` is `string | null | undefined`; and the Phase 2 acceptance trace falsifies "appear twice" directly, showing a plain `user.message` exactly once with `processed_at` already populated.
 
 ### Bounded iteration
 
@@ -418,7 +420,9 @@ Do not build, do not claim, and record the reason in `docs/LIMITATIONS.md`:
 | `tests/decision-schema.test.ts` | `TriageDecision` accepts each valid disposition shape and rejects: auto_resolve with zero citations, auto_resolve with null draft, escalate with null reason, an invented category. |
 | `tests/events.test.ts` | Consumer replays `fixtures/session-events.jsonl` and produces the expected `ConsumerResult`; breaks on idle-with-terminal-stop_reason and does not break on idle-requires_action; survives a synthetic unknown event type; dedupes a replayed history page by event id. |
 
-The fixture is a real trace captured once in Phase 3 and committed.
+Two fixtures. `fixtures/session-events.jsonl` is a real trace, captured in Phase 2 and promoted byte-for-byte in Phase 3 (D-021). `fixtures/synthetic-events.jsonl` is hand-built and labelled as such: it carries the Phase-4 shape — a custom tool call, an idle with `requires_action`, and a grader cycle — that the Phase 2 agent version could not emit. Real and synthetic never share a file.
+
+**The unknown-event claim is narrower than it reads.** The SDK filters incoming SSE frames against a hardcoded allowlist of event names (`core/streaming.js:56-101`), so a genuinely novel type is dropped before the consumer sees it. The default branch is reachable from fixture replay and from `sessions.events.list()`, both plain JSON, and on the live stream only from the three names that are on that allowlist but absent from the TypeScript union. See D-023.
 
 ### End to end (the ship gate)
 
@@ -509,7 +513,7 @@ Updated at every phase boundary. A fresh session reads this first to learn where
 | 0 | Verification, docs pull, scaffolding | `docs/reference/` populated, toolchain green | ✅ **Closed 2026-08-02** — 12 reference pages; pnpm workspace; TS 7.0.2 strict passing; `pnpm -s test` exit 0 |
 | 1 | MCP server standalone | Deployed server answers tools-list and both tools over HTTPS, token required, clean not-found path | ✅ **Closed 2026-08-03** — live at `https://mcp-server-alpha-snowy.vercel.app/mcp`; all six checks pass over HTTPS; 32 tests green |
 | 2 | Hello world on the runtime | A session runs end to end against the real account and streams events back | ✅ **Closed 2026-08-03** — `sesn_01ARzSiW9Hnm5hr29M7CA4w1` ran end to end, 13 events streamed, terminal gate fired on `end_turn`, archived clean. Outcomes smoke test **passed** (Tier B not needed). D-012 closed and verified. Vault → MCP path proven end to end. Spend: **$0.035–0.085** of $5 |
-| 3 | The SSE consumer | Consumer survives a full session incl. one tool call, prints a readable trace, unknown event types do not crash it | ⏳ **Next** — fixture already captured at `docs/evidence/phase-2-session.jsonl` |
+| 3 | The SSE consumer | Consumer survives a full session incl. one tool call, prints a readable trace, unknown event types do not crash it | ✅ **Closed 2026-08-04** — `src/events.ts` extracted; 21 new tests, 61 green; both inline gates deleted, one gate remains and it is under test. Three mutation checks confirm the suite catches the bugs it claims to. Spend: **$0.00** |
 | 4 | Triage core plus the skill | All ten tickets process. T-006 escalates. T-008 refused and escalated. T-009 fails gracefully | ⬜ |
 | 5 | Memory | Memory written in session A provably read and referenced in session B, proven in the trace | ⬜ |
 | 6 | Outcomes and the grader | Per-criterion rubric score for at least T-006 and T-008; iteration cap holds | ⬜ |

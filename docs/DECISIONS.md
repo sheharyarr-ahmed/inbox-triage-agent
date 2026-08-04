@@ -384,11 +384,155 @@ added.
 
 ---
 
-## Proposed `SPEC.md` amendments — raised, NOT applied
+## Phase 3 — the SSE consumer
+
+### D-021 · The committed fixture is a Phase 2 capture, not a Phase 3 one
+
+**Deviates from SPEC § Verification**, which says *"The fixture is a real trace
+captured once in Phase 3 and committed."*
+
+`tests/fixtures/session-events.jsonl` is `docs/evidence/phase-2-session.jsonl`
+copied byte-for-byte. It is a real trace; only its provenance differs.
+
+Considered: (a) capture fresh. The acceptance criterion asks for a session
+"incl. one tool call", and the Phase 2 trace already carries an
+`agent.mcp_tool_use` / `agent.mcp_tool_result` pair, so a re-run buys no event
+type the repo does not already hold — measured cost **~$0.011**. (b) Re-run
+`pnpm smoke` with trace capture to obtain real `span.outcome_evaluation_*`
+events — **~$0.024–0.074**, but on a throwaway agent against a two-line inline
+rubric, which Phase 6 supersedes with the real one. (c) Promote the Phase 2
+capture.
+
+Chose (c). Phase 3 spend: **$0.00**. SPEC § Cost controls #2 — "Full runs happen
+at phase acceptance, not during iteration" — and #4 point the same way.
+
+**What the Phase 2 trace structurally cannot contain**, and why no amount of
+money fixes it in this phase: `agent.custom_tool_use` and therefore
+`session.status_idle` with `stop_reason: requires_action` require agent
+version 2 carrying `submit_triage_decision`, which is Phase 4 work and blocked
+behind D-005. So `tests/fixtures/synthetic-events.jsonl` is a **separate** file,
+never mixed with the real one, holding a hand-built Phase-4-shaped session. Every
+line is traceable to a cited SDK interface or a measured shape — the
+`span.outcome_evaluation_end` usage block is D-017's recorded zero-filled payload
+verbatim rather than an invention.
+
+### D-022 · Stream exhaustion is not completion
+
+**SPEC § The SSE consumer specifies the reconnect procedure but never says what
+triggers it.** Read from the SDK source rather than the docs, which are silent:
+`@anthropic-ai/sdk/core/streaming.js:119-133`. A clean server-side close ends the
+`for await` **silently**; `controller.abort()` also returns **silently**; only a
+socket drop throws.
+
+So the iterator running out proves nothing. Only a terminal event proves
+completion. `consumeEvents` therefore treats exhaustion-without-a-terminal-event
+as a dropped stream and reconnects, and **throws** rather than returning a
+`ConsumerResult` if reconnects are exhausted — returning one would let Phase 4
+record a ticket as finished on `end_turn` that never finished.
+
+### D-023 · The unknown-event claim, stated to match what is actually proven
+
+The SDK filters SSE frames against a hardcoded allowlist of event names
+(`core/streaming.js:56-101`); a frame whose name is not on it is never yielded.
+So SPEC § The SSE consumer's default branch is **unreachable on the live stream
+for a genuinely novel type** — the consumer cannot crash on it because it never
+sees it.
+
+The property is real on the paths that carry plain JSON: fixture replay and
+`sessions.events.list()`. And it is genuinely exercised on the live stream by
+three names that are on the allowlist but have no TypeScript union member —
+`agent.session_thread_message_received`, `agent.session_thread_message_sent`,
+`session.thread_status_created`. `tests/events.test.ts` uses those three plus one
+wholly invented type, so the test is not an exercise against a straw man.
+
+Recorded because the honest claim and the flattering claim differ here, and
+`/defend` will be answered against this file.
+
+### D-024 · Amendment A-2 accepted and applied to SPEC
+
+Was raised in Phase 2 as a proposed amendment; the operator accepted both halves
+on 2026-08-04 and SPEC § The SSE consumer's `processed_at` paragraph is rewritten
+accordingly. Full reasoning is in A-2 below, retained rather than deleted so the
+raise-then-rule sequence stays auditable.
+
+Code consequence, and the reason it is worth applying rather than merely noting:
+`processed_at` is informational only. It is never a state-machine input and never
+a dedupe key anywhere in `src/events.ts`; `event.id` handles repeats.
+
+### D-025 · `src/events.ts` owns the terminal gate, and both callers were refactored onto it
+
+Phase 2 left byte-identical terminal gates inline in `src/run.ts:202-215` and
+`src/smoke-outcomes.ts:229-238`. Both are deleted; both files now call
+`consumeSession()`. The gate exists once, in `terminalReason()`, and is under
+test.
+
+Considered leaving the Phase 2 files untouched, since both are committed
+acceptance artifacts and a refactor changes proven code without a live re-run.
+Rejected: the duplication is precisely what Phase 3 exists to remove, Phase 4
+rewrites `run.ts` into the ten-ticket driver regardless, and the offline suite
+plus `pnpm -s typecheck` cover the refactor. Their acceptance output is unchanged
+so the Phase 2 evidence stays comparable.
+
+Three behaviours moved into the consumer rather than being dropped on the floor:
+
+1. **`onOpen`.** Refactoring naively introduced a real regression — Phase 2 fully
+   awaited the stream before sending, and calling `consumeSession()` then sending
+   alongside it races the two HTTP requests. That is exactly the race SPEC
+   § Session topology step 2 exists to prevent, and it fails intermittently
+   rather than loudly. `onOpen` is awaited after the stream is open and before
+   the first event is read.
+2. **`SpendLimitReached`.** Both files aborted on `session.error` with
+   `billing_error`. That is consumer behaviour every future caller needs under a
+   $5 hard cap, so it throws — with the partial `ConsumerResult` attached,
+   because on a spend-limit run those events are the only record of what was
+   bought. `terminatedBy` has no value for it, which is why it is an exception
+   and not a fifth union member.
+3. **`onEvent`.** Raw per-event side effect, so `run.ts` still writes its JSONL
+   trace as events arrive rather than from the returned array. The run that
+   throws is the run whose trace matters most.
+
+### D-026 · `durationMs` is derived, and labelled that way
+
+SPEC § Files requires `toolCalls: { name, durationMs }[]`. **No duration field
+exists on any event**, and `processed_at` is a *completion* stamp
+(`events-and-streaming.md:22`). The figure is the gap between two `processed_at`
+values, paired on `agent.mcp_tool_result.mcp_tool_use_id` (verified in the Phase 2
+trace) or `agent.tool_result.tool_use_id` (`events.d.ts:297`).
+
+That is honest for a tool call — the use event completes when the model emits it,
+the result event when the result lands; the real trace gives 419ms for
+`lookup_account`, which is a plausible HTTPS round trip to Vercel. But adjacent
+events are co-stamped to the microsecond, so the value is clamped at zero and the
+CLI prints it as `(derived)`. It is not a platform-reported latency and
+`docs/EVIDENCE.md` must not present it as one.
+
+### D-027 · Mutation-checked, because a test that cannot fail proves nothing
+
+The suite's whole claim is that it catches the two bugs SPEC names. Each was
+reintroduced and the suite confirmed red, then reverted:
+
+| Mutation | Result |
+|---|---|
+| Terminal gate breaks on bare idle, ignoring `stop_reason` | **3 tests fail** |
+| Dedupe `continue` placed before the terminal check | **1 test fails** |
+| `onOpen` started but not awaited (send races the stream) | **1 test fails** |
+
+The third mutation initially **passed**, which exposed a weak test rather than
+working code: the assertion could not distinguish "awaited" from "merely started"
+because its `onOpen` resolved synchronously. A real send is an HTTP round trip,
+so the test now yields before recording, and the mutation fails as it should.
+
+---
+
+## Proposed `SPEC.md` amendments
 
 SPEC § Subagents: *"A finding that contradicts this spec is escalated to the
-operator, never silently applied."* Four, for the operator to accept or reject.
-None of them block Phase 3.
+operator, never silently applied."*
+
+**Status:** A-2 was **accepted in full on 2026-08-04 and applied to `SPEC.md`**
+(see D-024); its text is kept below so the raise-then-rule sequence stays
+auditable. A-1, A-3 and A-4 remain raised and unruled. A-5 and A-6 are new in
+Phase 3. None of the open ones block Phase 4.
 
 ### A-1 · § Cost controls #1 describes a method that under-reports
 
@@ -400,7 +544,14 @@ grader's share. **This is the one amendment with a real consequence** — it is
 the difference between a $0.0116 estimate and a $0.0242–0.0744 reality, on a
 build with a $5 hard cap.
 
-### A-2 · § The SSE consumer, `processed_at` — the exception list is incomplete AND the model is wrong
+### A-2 · ✅ ACCEPTED 2026-08-04, APPLIED — § The SSE consumer, `processed_at`: the exception list is incomplete AND the model is wrong
+
+**Ruled on by the operator in Phase 3. SPEC is rewritten; see D-024.** One
+confirmation arrived after this was first raised: the SDK types corroborate the
+exception half independently — `BetaManagedAgentsUserDefineOutcomeEvent`
+declares `processed_at: string` (required), while
+`BetaManagedAgentsUserMessageEvent` and `BetaManagedAgentsUserInterruptEvent`
+declare it `string | null` and optional. The original text follows.
 
 SPEC, verbatim:
 
@@ -468,3 +619,41 @@ been accurate. One observation, degenerate setup.
 Cheap to settle in Phase 6 before committing to the design: enable `write`, have
 the agent write to `/mnt/session/outputs/`, and compare against a run where the
 deliverable exists only as a custom-tool payload.
+
+### A-5 · § The SSE consumer's terminal gate omits `session.deleted` — RAISED IN PHASE 3
+
+SPEC names exactly two terminal conditions: `session.status_terminated`, and
+`session.status_idle` when `stop_reason.type !== 'requires_action'`. There is a
+third, and the SDK states it outright (`events.d.ts:650-652`):
+
+> Emitted when a session has been deleted. **Terminates any active event stream**
+> — no further events will be emitted for this session.
+
+`reference.md:51` says the same. A session deleted mid-run leaves SPEC's loop
+waiting on a dead socket until the wall clock fires — five minutes of nothing per
+ticket, and a ticket recorded as `escalated_by_timeout` for a reason that has
+nothing to do with the ticket.
+
+`ConsumerResult.terminatedBy` has no value for it. **Applied provisionally in
+`terminalReason()` mapped to `terminated`**, because leaving a known hang in the
+one module Phase 4 depends on was the worse of the two options — flagged here
+rather than left silent. If the operator prefers a distinct
+`terminatedBy: 'deleted'`, it is a one-line change plus the union.
+
+### A-6 · D-018 mis-sources `retries_exhausted` — RAISED IN PHASE 3
+
+D-018 lists `retries_exhausted` among five SPEC claims it says the three
+late-pulled reference pages substantiated. It does not appear in any of the
+fifteen pages in `docs/reference/`; a grep returns hits only in `SPEC.md:144` and
+in D-018's own sentence.
+
+**The value is real** — `BetaManagedAgentsSessionRetriesExhausted`
+(`events.d.ts:707-712`): *"The turn ended because repeated errors exhausted the
+retry budget or an error escalated to `retry_status: 'exhausted'`."* It is one of
+exactly three members of the `stop_reason` union, so SPEC's `terminatedBy` maps
+onto it 1:1 and nothing downstream changes.
+
+Only the provenance is wrong: the source is the installed SDK's type
+declarations, not `reference.md`. Worth correcting because D-018's claim that
+each of the five is "now sourced" is what a reader would rely on, and `/defend`
+answers from this file.
