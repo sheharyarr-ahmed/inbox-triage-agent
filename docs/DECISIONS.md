@@ -522,6 +522,40 @@ working code: the assertion could not distinguish "awaited" from "merely started
 because its `onOpen` resolved synchronously. A real send is an HTTP round trip,
 so the test now yields before recording, and the mutation fails as it should.
 
+### D-028 · Deferred to Phase 7 — `pnpm -s test` is offline but not hermetic
+
+Not a Phase 3 change. Recorded so a cleared session does not rediscover it while
+wiring the Stop hook, same as D-012 was for the MCP permission policy.
+
+SPEC § Files makes `.claude/verify.sh` a *"Stop hook gate. Runs `pnpm -s test`
+only"*, and SPEC § Verification calls that suite *"Fully offline, zero spend, no
+network."* Offline it is. **Hermetic it is not.**
+
+Measured 2026-08-04 by moving `.env.local` aside and re-running:
+
+```
+Test Files  1 failed | 2 passed (3)
+Tests       53 passed (53)
+❯ src/config.ts:90:20
+❯ src/env-file.ts:16:1
+```
+
+`tests/env-file.test.ts` imports `src/env-file.ts`, which imports `ENV_PATH` from
+`src/config.ts`, which executes `export const env = load()` at module scope and
+throws unless `ANTHROPIC_API_KEY`, `ANTHROPIC_WORKSPACE_ID`, `MCP_SERVER_URL` and
+`MCP_SERVER_TOKEN` are all present. So the suite cannot run from a fresh clone,
+and it could not run in CI.
+
+Pre-existing, introduced in Phase 2 with D-016 — not caused by Phase 3.
+`tests/events.test.ts` is deliberately clean of it: it resolves its own fixture
+path rather than importing `REPO_ROOT` from `config.ts`, which is why 53 tests
+still pass with the file missing.
+
+Phase 7 options, not chosen here: split the constant so `env-file.ts` does not
+import the validating module; make `config.ts` validate lazily instead of at
+import; or have the suite provide a fixture env. The first is smallest and keeps
+`config.ts`'s fail-fast behaviour for the executables that actually need it.
+
 ---
 
 ## Proposed `SPEC.md` amendments
