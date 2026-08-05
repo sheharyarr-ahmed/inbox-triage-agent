@@ -17,3 +17,6 @@ dist/
 
 # strategy doc, local reference only — not for the public repo
 BLUEPRINT.md
+
+# driver run lock (see src/run.ts)
+docs/evidence/.run.lock

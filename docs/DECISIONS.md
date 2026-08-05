@@ -1877,6 +1877,61 @@ the host records what the agent submitted and labels how it ended. A driver that
 edited a disposition to match a rule would destroy the property every artifact in
 `docs/evidence/` depends on.
 
+### D-066 · Two drivers ran at once, and the failure is silent by construction
+
+**An operational error, recorded because the artifact it produced looked
+entirely normal and the guard that now prevents it did not exist.**
+
+The first ship-gate run was stopped after one ticket, on purpose, because it had
+started against a memory store carrying six Phase 6 memories (see D-061).
+`pkill -f 'tsx src/run.ts'` reported success. **It had not stopped the driver.**
+A second run was then started with `--reset-memory`, and for several minutes two
+drivers were live against the same account.
+
+What that costs is not what it looks like. The two runs overwrite the same
+`docs/evidence/<label>-*` files, which is visible and recoverable. The damage is
+one layer down: **they share ONE memory store, and no label partitions it.** The
+second run's `--reset-memory` deleted the first run's memory mid-flight, and from
+then on each run's agent was reading records the other run's sessions had
+written. Every symptom was plausible:
+
+- `phase-7-decisions.json` ended up holding three tickets from one run and one
+  from the other, each with a valid-looking session id.
+- The memory tripwire fired on `/accounts/ACC-2001.md` — *"line 4 is not a record
+  line"* — on a file two runs had been appending to.
+- Every ticket ran to three evaluations and two ended
+  `escalated_by_iteration_cap`, against Phase 6's seven-of-ten `satisfied`. That
+  reads as a quality regression and is not one; it is two agents disagreeing with
+  a grader about a memory file neither of them wrote alone.
+
+Cost: **~$0.8743 ceiling** across four sessions, for artifacts that prove
+nothing. Nothing was learned about the agent, because the independent variable
+was contaminated.
+
+**The fix is an exclusive lock, taken before any session is created.** `openSync`
+with the `wx` flag is the whole mechanism — an atomic create-or-fail, so two
+processes starting together cannot both win. A lock left by a crashed run is not
+a wedge: the holder's pid is probed with `process.kill(pid, 0)`, which sends no
+signal and only asks whether the process exists, and a dead holder's lock is
+reclaimed with a printed note. It releases in a `finally` and on SIGINT, SIGTERM
+and SIGHUP — the signals that failed to stop the run this entry exists for.
+
+Proven both directions: a live holder is refused by name before any API call, and
+a stale lock from a dead pid is reclaimed and the run proceeds.
+
+**The lesson worth keeping is about the kill, not the lock.** `pkill` exits 0 when
+it matched *something*, which is not the same as the target being gone. Every
+stop of a live run in this repo is now followed by a `pgrep` that confirms it,
+because a driver believed dead and actually alive is the most expensive state
+this build can be in — it spends money and invalidates the run that replaces it.
+
+**Two things the void run did establish**, both about code rather than about the
+agent, and both worth having: `escalated_by_iteration_cap` (A-18) fired in
+production and labelled exactly the tickets whose grader never satisfied, and the
+new gates added in D-062 all executed live. The artifacts are deleted rather than
+committed — a run whose independent variable was contaminated is not evidence,
+and `docs/evidence/` may only hold things that are.
+
 ### D-065 · The D-053 counterweight is deferred, with its price recorded
 
 D-053 left one lever open: `SKILL.md:179-196` and `agent.yaml:41-43` state the

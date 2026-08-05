@@ -65,7 +65,16 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  openSync,
+  closeSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { REPO_ROOT, consoleTraceUrl, requireIds } from "./config.js";
@@ -731,6 +740,78 @@ async function main(): Promise<void> {
   const evidenceDir = resolve(REPO_ROOT, "docs/evidence");
   mkdirSync(evidenceDir, { recursive: true });
 
+  // ---- exclusive run lock --------------------------------------------------
+  //
+  // Two drivers must never run at once. They do not merely race on the evidence
+  // files this run overwrites — they share ONE memory store, which is a live
+  // resource no label can partition. A second run's `--reset-memory` wipes the
+  // first run's memory mid-flight, and thereafter each agent reads records the
+  // other session wrote. Both runs then look plausible and neither is valid.
+  //
+  // Measured on 2026-08-06, and this guard exists because of it: a first gate
+  // run was believed stopped and was not, a second was started with
+  // `--reset-memory`, and the two interleaved for ~$0.87 of unusable artifacts —
+  // three tickets from one run and one from the other written into a single
+  // `phase-7-decisions.json`, and a memory tripwire that fired on a file two
+  // sessions had been appending to. The failure is silent by construction: each
+  // run's own output looks like a normal run.
+  //
+  // `wx` is the whole mechanism — an atomic create-or-fail, so two processes
+  // starting together cannot both win. A stale lock from a crashed run is
+  // detected with `process.kill(pid, 0)`, which signals nothing and only tests
+  // whether the pid is alive, and is then reclaimed rather than requiring a
+  // manual delete.
+  const lockPath = resolve(evidenceDir, ".run.lock");
+  const takeLock = (): void => {
+    try {
+      closeSync(openSync(lockPath, "wx"));
+    } catch {
+      const held = (() => {
+        try {
+          return readFileSync(lockPath, "utf8").trim();
+        } catch {
+          return "";
+        }
+      })();
+      const pid = Number(held.split(/\s+/)[0]);
+      let alive = false;
+      try {
+        process.kill(pid, 0);
+        alive = true;
+      } catch {
+        alive = false;
+      }
+      if (alive) {
+        throw new Error(
+          `Another run holds ${lockPath} (${held}).\n` +
+            `  Two drivers share ONE memory store, so a concurrent run invalidates BOTH.\n` +
+            `  Wait for it to finish, or stop it and delete the lock file.`,
+        );
+      }
+      console.log(`  stale lock from pid ${pid} reclaimed (process is gone)`);
+      writeFileSync(lockPath, "", "utf8");
+    }
+    writeFileSync(lockPath, `${process.pid} ${label} ${new Date().toISOString()}\n`, "utf8");
+  };
+  const releaseLock = (): void => {
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      /* already gone */
+    }
+  };
+
+  takeLock();
+  // Released on normal exit below, and on the signals that killed the run this
+  // guard exists because of.
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.once(sig, () => {
+      releaseLock();
+      process.exit(130);
+    });
+  }
+
+  try {
   console.log(`── ${label} · triage driver `.padEnd(64, "─"));
   console.log(`  agent          ${ids.AGENT_ID} v${agentVersion} (pinned)`);
   console.log(`  memory store   ${ids.MEMORY_STORE_ID} (read_write, attached at creation)`);
@@ -1404,6 +1485,9 @@ async function main(): Promise<void> {
   const banner = label.toUpperCase();
   console.log(`\n  ${passed ? `${banner} GATES MET` : `${banner} GATES NOT MET`}`);
   if (!passed) process.exitCode = 1;
+  } finally {
+    releaseLock();
+  }
 }
 
 main().catch((err) => {
