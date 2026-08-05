@@ -12,7 +12,9 @@
 
 Ship a documented, defensible agent on Claude Managed Agents that triages ten seeded support tickets in ten separate sessions, calls a custom remote MCP server for account and order context, cites a specific ticket field or tool record for every decision, escalates on ambiguity and on adversarial input rather than guessing, grades each decision against a five-criterion rubric through the outcomes loop with a three-pass cap, and carries customer context across sessions through a memory store the agent itself reads and writes.
 
-Six of eight platform primitives are demonstrated: sessions with a real SSE event consumer, memory stores, outcomes and the grader, a custom MCP server, an Agent Skills bundle, and vaults.
+Six platform capabilities are demonstrated, each individually sourced to `docs/reference/`: sessions with a real SSE event consumer, memory stores, outcomes and the grader, a custom MCP server, an Agent Skills bundle, and vaults.
+
+*Amended 2026-08-06 (A-19 through A-22, accepted).* This line read *"Six of eight platform primitives are demonstrated"* and the denominator was this project's own. **No enumeration of eight exists anywhere in `docs/reference/`.** Anthropic publishes **four core concepts** — Agent, Environment, Session, Events (`overview.md:37-44`, repeated verbatim at `quickstart.md:13-20`) — and the word "primitive" appears exactly once in all eighteen pages, at `vaults.md:7`, about vaults specifically. The figure traces to `BLUEPRINT.md:132` and `:586`, whose own availability table lists **eleven** candidate features and never reconciles them to eight. SPEC's header rule — *"Where `docs/reference/` contradicts training data, the docs win"* — decides it. The six are named and cited; the fraction is dropped rather than defended. A claim of "six of eight" invites the one question at `/defend` that has no answer: which eight.
 
 ---
 
@@ -47,7 +49,9 @@ inbox-triage-agent/
 │   ├── events.ts                          # SSE consumer: typed handling, terminal gate, reconnect
 │   ├── grader.ts                          # per-criterion verdicts parsed out of the grader explanation
 │   ├── decision.ts                        # TriageDecision Zod schema + custom-tool handler
+│   ├── assertions.ts                      # pure ship-gate predicates, offline-testable
 │   ├── config.ts                          # loads and validates resource IDs from env
+│   ├── paths.ts                           # REPO_ROOT + ENV_PATH only; imports nothing (D-028)
 │   └── types.ts
 ├── data/
 │   └── tickets.json                       # the ten seeded tickets
@@ -56,8 +60,11 @@ inbox-triage-agent/
 │   ├── decision-schema.test.ts
 │   ├── events.test.ts                     # replays fixtures, injects synthetic unknown event
 │   ├── grader.test.ts                     # runs the parser against real committed grader explanations
-│   └── fixtures/
-│       └── session-events.jsonl           # real trace captured in Phase 3
+│   ├── memory.test.ts                     # memory predicates + SKILL.md invariants
+│   ├── env-file.test.ts                   # .env.local upsert + the D-028 hermeticity guard
+│   ├── assertions.test.ts                 # ship gate replayed over committed phase-6 artifacts, $0
+│   ├── evidence.test.ts                   # docs/EVIDENCE.md carries what condition 6 requires
+│   └── fixtures/                          # 5 files; real and synthetic never share one
 ├── docs/
 │   ├── AGENT_DESIGN.md
 │   ├── LIMITATIONS.md
@@ -165,7 +172,7 @@ These are load-bearing. The blueprint states four things that do not match the l
 | # | Blueprint says | Reality | Consequence |
 |---|---|---|---|
 | 1 | Three beta headers, memory uses `agent-memory-2026-07-22` | `managed-agents-2026-04-01` covers agents, environments, sessions, and vaults. **Memory store endpoints use `agent-memory-2026-07-22` instead**: sending both on one memory-store request returns 400, and the SDK sets the correct one automatically. Attaching a memory store to a session is a *session* call and still uses `managed-agents-2026-04-01`. `skills-2025-10-02` applies to `/v1/skills` only. `files-api-2025-04-14` applies to `/v1/files` only. `dreaming-2026-04-21` is **unverified**: dreaming is a real resource, but that header string has not been confirmed and must not be stated. | Blueprint §1.4, §21, and defend Q1 rewritten. Do not state a header you have not sent. **Amended 2026-08-02:** the blueprint was right about the memory header; the v1 "one header for this build" correction is withdrawn, verified against `docs/reference/memory.md`. |
-| 2 | MCP server protected by a bearer token carried on the agent definition | `mcp_servers` accepts `{type, name, url}` only. No auth field, no headers. Credentials live in a vault as a `static_bearer` credential keyed by MCP server URL, attached per session via `vault_ids`, injected by an Anthropic-side proxy after the request leaves the sandbox. | Vaults move into v1 scope. Sixth primitive gained. Stronger guardrail claim: the token never enters the sandbox, so prompt injection cannot exfiltrate it. |
+| 2 | MCP server protected by a bearer token carried on the agent definition | `mcp_servers` accepts `{type, name, url}` only. No auth field, no headers. Credentials live in a vault as a `static_bearer` credential keyed by MCP server URL, attached per session via `vault_ids`, and injected automatically when the agent connects to that URL at session runtime (`vaults.md:129`). | Vaults move into scope, a sixth capability gained. Guardrail claim, as amended by A-22: the token is never written into the agent definition, the environment or the repo, and the agent has no `bash` and no `web_fetch` with which to exfiltrate anything. The stronger "never enters the sandbox" phrasing is **not** sourceable for `static_bearer` — see § MCP server. |
 | 3 | Haiku for triage, Sonnet for the grader | `user.define_outcome` accepts `description`, `rubric`, `max_iterations`. There is no grader-model parameter. | The two-model claim is dropped from the stack summary, §16.1 copy, and defend Q13. The grader-isolation claim stands and is the stronger half anyway. |
 | 4 | Two independent iteration caps, one platform-side and one yours | `max_iterations` is the caller-set cap (default 3, platform maximum 20) and it is server-enforced. There is no second ceiling underneath it. | The genuine client-side bound is the per-ticket wall clock in `run.ts`. Defend Q7 rewritten around that distinction. |
 
@@ -216,8 +223,10 @@ tools:
 mcp_servers:
   - { type: url, name: support-records, url: https://<deploy>.vercel.app/mcp }
 skills:
-  - { type: custom, skill_id: ${TRIAGE_SKILL_ID}, version: "1" }
+  - { type: custom, skill_id: ${TRIAGE_SKILL_ID}, version: "${TRIAGE_SKILL_VERSION}" }
 ```
+
+*Amended 2026-08-06 (A-9, accepted).* The literal was `version: "1"`. Custom skill versions are **epoch-timestamp strings** — `skills-guide.md:50`, custom-skill column: *"Epoch timestamp: `1759178010641129` or `latest`"* — and the live pin is `1785915306195089`. `"1"` is not a value the API ever returns, so a reader reproducing the build from this block would pin something that cannot resolve. The *intent* is unchanged and still correct: pinned, never `latest`, so a session is reproducible. `${TRIAGE_SKILL_VERSION}` is substituted by `scripts/apply-control-plane.sh` from `.env.local`, because `ant` reads the definition on stdin and performs no interpolation of its own — an unsubstituted placeholder reaches the API as a literal string.
 
 Default off, five tools opted in. `bash`, `web_search`, and `web_fetch` are never enabled. `read` is required because skills cannot load without it. `write`, `edit`, `glob`, and `grep` exist for the memory mount and nothing else.
 
@@ -242,7 +251,7 @@ AGENT_ID=$(ant --api-key "$ANT_KEY" beta:agents create < agent/agent.yaml --tran
 
 `src/deploy.ts` provisions what the CLI path does not cover, each step guarded by an existence check so re-running is safe:
 
-1. **Custom skill.** Package `agent/skills/triage/`, `POST /v1/skills`, then a version. Capture `skill_id` and pin `version: "1"` on the agent. Pinned, not `latest`, so a session is reproducible.
+1. **Custom skill.** Package `agent/skills/triage/`, `POST /v1/skills`, then a version. Capture `skill_id` and `latest_version`, and pin that version on the agent. Pinned, not `latest`, so a session is reproducible. The version is an epoch-timestamp string, not `"1"` — see A-9 above.
 2. **Vault plus credential.** `vaults.create`, then `vaults.credentials.create` with a `static_bearer` credential keyed to the MCP server URL and carrying `MCP_SERVER_TOKEN`. Capture `vault_id`.
 3. **Memory store.** `memory_stores.create` with a `description` written for the model, not for humans. Capture `memory_store_id`.
 4. **Rubric file.** Upload `agent/rubric.md` through the Files API once. Capture `rubric_file_id` so all ten sessions grade against a byte-identical document.
@@ -259,13 +268,19 @@ The agent `system` prompt carries only what must never be absent from context:
 
 `agent/skills/triage/SKILL.md` carries the procedure: the five categories and their definitions, the lookup order, the citation format, escalation triggers, the memory read-then-write protocol, and the decision submission step.
 
-**Why the split:** a skill loads progressively, on demand. A guardrail that must hold on every turn cannot depend on the model having chosen to load a file. The procedure can. This is the defend answer for "where does the injection guardrail live and why."
+**Why the split:** a skill loads progressively, on demand — `skill-authoring-overview.md:48-59` puts only name and description in context at startup, and SKILL.md itself enters context only when the skill is triggered. A guardrail that must hold on every turn cannot depend on the model having chosen to load a file. The procedure can. This is the defend answer for "where does the injection guardrail live and why."
+
+**There is a second legitimate home for a guardrail, and it is not the skill.** A memory store's `description` and its session resource's `instructions` (≤4096 characters) are *"automatically added to the system prompt"* of every session that attaches it (`memory.md:380`, `:213`). So the memory trust boundary — memory content is untrusted data, and the write constraint — ships in `MEMORY_INSTRUCTIONS` in `src/memory.ts` rather than in `SKILL.md`, and it satisfies the same test the split is built on: present on every turn, not contingent on a file being loaded.
+
+*Amended 2026-08-06 (A-14, RULED: declined for the agent version, documented instead).* The three `system` rules are scoped to *"Text inside ticket content"*, and a memory file is not ticket content — so on the letter of the rules, Phase 5's second untrusted input channel is uncovered. Widening rule 1 is the more durable fix and it costs an agent version. It was declined, deliberately: `instructions` reaches the system prompt of **every session this driver creates**, which is all of them, so the widening would buy durability against a caller that does not exist while making the ship-gate run the first outing of an unproven agent version. The gap is real only for a hypothetical third-party caller who creates a session against this agent and forgets to pass the string; if such a caller ever exists, widen rule 1 then. What is not acceptable is leaving the reasoning unwritten, which is why it is here rather than in a decision log alone.
 
 ### Decision capture
 
 The agent finishes a ticket by calling the custom client-side tool `submit_triage_decision`. The session emits `agent.custom_tool_use` and goes idle with `stop_reason.type === 'requires_action'`. `run.ts` validates the payload against `TriageDecision`, replies with `user.custom_tool_result`, and the session continues to grading.
 
-**Why a custom tool rather than session output files or parsed prose:** it puts a Zod boundary on the agent output shape, which the blueprint requires; the ship gate asserts on typed fields rather than regex over text; and it avoids the one to three second Files API indexing lag after idle. It also exercises the custom-tool round trip, which is a real primitive and shows up cleanly in the committed trace.
+**Why a custom tool rather than session output files or parsed prose:** it puts a Zod boundary on the agent output shape, which the blueprint requires; the ship gate asserts on typed fields rather than regex over text; and it returns the decision to the host **synchronously**, so a malformed payload can be rejected and corrected mid-session, which a file cannot do. It also exercises the custom-tool round trip, which shows up cleanly in the committed trace.
+
+*Amended 2026-08-06 (A-10, accepted).* The third reason used to read *"it avoids the one to three second Files API indexing lag after idle."* **That figure appears nowhere in the eighteen pages of `docs/reference/`** — `define-outcomes.md:718` says only *"Once the session is idle, fetch them through the Files API"*, and states no latency at all. The clause also did less work after D-032 than before it: A-4 turned out to be real, so the decision now lands in `/mnt/session/outputs/` **as well as** through the custom tool. It is replaced by the reason the custom tool actually earned in Phase 4 — the synchronous round trip is what lets `run.ts` answer a Zod violation with `is_error: true` and let the agent correct itself. The other two reasons stand unaided.
 
 On validation failure, `run.ts` returns `user.custom_tool_result` with `is_error: true` and the Zod message, so the agent can correct rather than the run dying.
 
@@ -306,7 +321,9 @@ Per ticket, `run.ts`:
 
 **Unknown event types.** Default branch logs `{type, id}` and continues. Proven by injecting a synthetic unrecognised event into the fixture replay in `tests/events.test.ts`.
 
-**Instrumentation.** Log per event: tool name and duration from `agent.tool_use` and `agent.mcp_tool_use` paired with their result events; token usage from `span.model_request_end.model_usage`; grader progress from `span.outcome_evaluation_start`, `_ongoing`, and `_end`, including `result`, `explanation`, `iteration`, and the `usage` block that is the grader cost telemetry.
+**Instrumentation.** Log per event: tool name and duration from `agent.tool_use` and `agent.mcp_tool_use` paired with their result events; token usage from `span.model_request_end.model_usage`; grader progress from `span.outcome_evaluation_start`, `_ongoing`, and `_end` — noting that only `_end` carries `result`, `explanation` and `usage`.
+
+*Amended 2026-08-06 (A-16, accepted, text only).* The sentence used to attribute `result`, `explanation`, `iteration` and `usage` to all three span events. `_start` and `_ongoing` carry `{id, iteration, outcome_id, processed_at, type}` and nothing else (`events.d.ts:1017-1059`). `src/events.ts` was already correct; only the prose was loose. The `usage` block is also **not** "the grader cost telemetry" — it is zero-filled in practice, which is A-15 and D-017.
 
 **`processed_at`.** Every persisted event carries a `processed_at` set when the event finishes processing. On events you send, it is null **only while that event is still queued behind earlier events** — not unconditionally on first sighting. Three events are processed on receipt and echoed back with `processed_at` already populated: `user.define_outcome`, `user.custom_tool_result`, and `user.tool_result` (the last is `self_hosted`-only and off this build's path). Treat `processed_at` as informational: it is never a state-machine input and never a dedupe key. `event.id` is what handles repeats.
 
@@ -320,6 +337,10 @@ Two mechanisms, genuinely distinct:
 - **Wall clock:** a per-ticket deadline held in `run.ts`. On expiry it sends `user.interrupt`, drains to idle, records the ticket as `escalated_by_timeout`, and archives after the status poll. An interrupted turn ends with `stop_reason: end_turn`, the same value a clean finish carries, so the driver tracks that it sent the interrupt rather than inferring it.
 
 A ticket that exhausts either bound escalates by definition. It never loops.
+
+*Amended 2026-08-06 (A-18, accepted).* That sentence had no representation in the code. `TicketOutcome` carried `escalated_by_timeout` for the wall clock and `escalated_by_validation` for a rejected submission, but nothing for the grader-pass bound — so a ticket the grader **never accepted** was recorded `decided`, which is true and loses the only fact that matters about it. It went live before it was ruled: Phase 6's acceptance run put **three** tickets there (T-002, T-003, T-007, all `max_iterations_reached`), and D-056 found that two of them had recorded a disposition the grader had argued against. A run summary reading "10 decided" on that run is the D-055 failure exactly — silence reads as "all ten were accepted".
+
+`escalated_by_iteration_cap` is the missing third sibling. It fires on `max_iterations_reached` and nothing else, because that is the bound this sentence names: `interrupted` is what the wall clock produces and already has a member, and `failed` has never been observed and is reported rather than folded in. **The decision itself is never rewritten** — the host records what the agent submitted and labels how it ended; a driver that edited a disposition to match a rule would destroy the one property the evidence rests on.
 
 ### Rubric
 
@@ -342,7 +363,11 @@ The explicit pass language in criterion 3 closes an adversarial interaction betw
 
 ### Memory
 
-Store description written for the model. Mounted at `/mnt/memory/<store-name>/` with `access: 'read_write'`.
+Store description written for the model. Mounted with `access: 'read_write'` at a path that is **read from the session's memory-store resource, never constructed**.
+
+*Amended 2026-08-06 (A-11, accepted).* This sentence used to say *"Mounted at `/mnt/memory/<store-name>/`"*. `memory.md:380` gives a different rule and an explicit instruction not to apply SPEC's: the directory is the display name **slugified**, and *"The exact path is returned in the `mount_path` field on the session's memory-store resource; read it from there rather than constructing it yourself."*
+
+**This is the amendment whose cost is silent data loss.** Same source: *"writes to any other path under `/mnt/memory/` land in container-local scratch and are lost when the session ends."* No error, no event, no failed tool call. A run following the old rule after a store rename would pass every behavioural gate and store nothing — and `memory-stores.d.ts:183-185` confirms *"Renaming changes the slug used for the store's `mount_path`."* `memoryMountPath()` in `src/memory.ts` therefore has **no fallback branch**, and `run.ts` additionally asserts host-side that nothing was written outside the mount, because the platform gives no signal and so the host must. See D-041.
 
 Layout, enforced by `SKILL.md`:
 
@@ -362,7 +387,15 @@ Streamable HTTP MCP server on Vercel Hobby, built on `@modelcontextprotocol/sdk`
 
 `src/auth.ts` rejects any request without a matching `Authorization: Bearer` header from `MCP_SERVER_TOKEN`. That same token is stored as the vault `static_bearer` credential.
 
-**The credential never enters the sandbox.** The agent's shell cannot read it. The MCP tool call leaves the container, an Anthropic-side proxy fetches the credential from the vault and attaches it, and the request reaches Vercel authenticated. That is the guardrail: prompt injection in a ticket cannot exfiltrate a secret the sandbox never held.
+**The credential is never written into the agent definition, the environment, or the repo.** `vaults.md:129`: MCP credentials are *"keyed by an `mcp_server_url`. When the agent connects to a server at that URL at session runtime, the token is injected automatically."* `vaults.md:132`: the values supplied *"are treated as sensitive, write-only fields and never returned in API responses."* The agent's own definition carries no auth field at all — `mcp_servers` accepts `{type, name, url}` only.
+
+*Amended 2026-08-06 (A-22, accepted).* This paragraph used to say *"an Anthropic-side **proxy** fetches the credential from the vault and attaches it"* and *"prompt injection in a ticket cannot exfiltrate a secret the sandbox never held."* Two problems, both found by sweeping the reference set rather than by reasoning.
+
+**The word `proxy` returns zero hits across all eighteen pages.** `vaults.md:129` says "injected automatically" and stops. The mechanism is plausible; it is not documented.
+
+**The never-in-the-sandbox guarantee is written about a different credential type.** `vaults.md:130` and `:715` — *"stored in the sandbox as an opaque placeholder … substituted with the real secret at egress. The agent never sees the secret value"*, and *"The substitution happens at egress, not inside the sandbox"* — are about **`environment_variable`** credentials. This build uses **`static_bearer`**, for which `docs/reference/` describes no injection point. The irony is worth stating: the type carrying the explicit guarantee is the one that *does* put a placeholder inside the sandbox.
+
+**What is structurally true, and is the stronger claim anyway:** the agent has **no `bash`, no `web_search`, and no `web_fetch`** — SPEC § Runtime configuration's allowlist opts in exactly five file tools, so it has no shell to read an environment from and no outbound channel to send one to. That is verifiable from `agent/agent.yaml` in the repo, today, with no appeal to an undocumented mechanism. Exfiltration is bounded by what the agent can *do*, not only by what it can *see*. Anything stronger than that needs a measurement — a sandbox-side attempt to read the token — and this build has not made one.
 
 ### Seeded data
 
@@ -394,7 +427,9 @@ Build on `claude-haiku-4-5`. If T-006 or T-008 fail rubric criterion 3 or 5 acro
 
 *Amended 2026-08-05 (Phase 6 boundary).* The original text read *"Hard constraint: $10 of API credit, not the $20 the blueprint assumed"*, and § Environment state paired it with a **$5 workspace hard limit** that made overspend structurally impossible — requests were blocked at the cap, and a workspace-scoped key could not reach the rest of the balance. **That guarantee no longer exists.** The remaining bound is the organization credit balance, and the only per-run protection is `run.ts`'s `--budget` projection stop and the per-ticket wall clock. Both are discipline rather than physics: a forgotten flag or a bad projection now costs real money instead of being refused. Two consequences, and they are the reason this amendment is a paragraph rather than a number swap:
 
-- **`--budget` is now load-bearing and must be passed explicitly on every live run**, not left to its default. Its default is raised to `2.50` on measurement, not taste: the Phase 6 ten-ticket graded run finished at **$1.2310** ceiling, but its mid-run projection peaked at **$1.7049**, which the old `1.50` default would have stopped for no good reason.
+- **`--budget` is now load-bearing and must be passed explicitly on every live run**, not left to its default. The figure `2.50` comes from measurement, not taste: the Phase 6 ten-ticket graded run finished at **$1.2310** ceiling, but its mid-run projection peaked at **$1.7049**, which the old `1.50` default would have stopped for no good reason.
+
+  *Amended 2026-08-06 (Phase 7).* "Must be passed explicitly" was a sentence in a document, which is the same class of protection as the one that was just removed. **`run.ts` now refuses to start a graded run without `--budget`** and rejects a non-numeric value. `--label` lost its default in the same pass, for a different failure with the same shape: it defaulted to `phase-4` while the trace writer truncates before appending, so the shortest command in the repo — a bare `pnpm session` — silently destroyed ten committed Phase 4 traces and `phase-4-decisions.json`. Committed evidence is the one artifact this build cannot cheaply regenerate.
 - **Spend is still derived, never read.** No platform figure is trustworthy for this — `list_cost` moved units between two runs (D-047). Every balance number in this repo is priced from `session.usage` token counts at the pinned model's rates. The Console's own workspace usage view is the independent cross-check and it has not yet been taken.
 
 Removing the cap widens what the build can attempt — SPEC § Model escalation path becomes affordable, and so does the prompt counterweight D-053 leaves open. It does not make either of them correct: both fire on measured failures, and having the money to run them is not evidence that they are needed.
@@ -403,7 +438,11 @@ Seven controls, in order of leverage:
 
 1. **Measure before scaling.** `run.ts` prints a per-run dollar figure on exit, and extrapolation happens from a measured single-ticket run, never from a guess, before committing to a ten-ticket pattern.
 
-   *Amended 2026-08-04 (A-1, accepted; refined by D-034).* The original text said to sum `span.model_request_end.model_usage` and `span.outcome_evaluation_end.usage`. That method **under-reports**: the second field is zero-filled in practice, so it misses the grader entirely — $0.0116 reported against a $0.0242–0.0744 reality on the run that exposed it (D-017). `session.usage` is authoritative instead. Phase 4 then found a better source than either: the `session.usage` **event** carries a platform-reported `list_cost` (`{"amount": "0.1", "currency": "USD"}`), which no reference page documents and which removes the need to split agent from grader by subtraction or to bracket the result. Where a bracket is still printed, quote its **ceiling** — the floor of a 5× Haiku-to-Opus spread is not an estimate. See D-034.
+   *Amended 2026-08-04 (A-1, accepted).* The original text said to sum `span.model_request_end.model_usage` and `span.outcome_evaluation_end.usage`. That method **under-reports**: the second field is zero-filled in practice, so it misses the grader entirely — $0.0116 reported against a $0.0242–0.0744 reality on the run that exposed it (D-017). **`session.usage` is authoritative for tokens.** Where a bracket is printed, quote its **ceiling** — the floor of a 5× Haiku-to-Opus spread is not an estimate.
+
+   *Amended 2026-08-06 (A-13, accepted).* Phase 4 found what looked like a better source and this clause directed the build at it: the `session.usage` **event** carries a platform-reported `list_cost` (`{"amount": "0.1", "currency": "USD"}`), undocumented in all eighteen reference pages and absent from the SDK types. **Phase 5 implemented that and measured that it is not safe.** The same field, the same code path, one day apart: `"0.02"` and `"0.1"` on 2026-08-04 against derived figures of $0.018 and $0.095 — dollars; then `"3"` and `"4"` on 2026-08-05 against $0.027 and $0.032 — cents. `currency` read `"USD"` all four times. Read as dollars, it projected **$8.00** for two Haiku tickets and stopped a run that had spent three cents.
+
+   The instruction is withdrawn. **Every dollar figure in this repo is DERIVED**, priced from `session.usage`'s own token counts at the pinned model's rates, and for an ungraded run on a pinned model that derivation is *exact* rather than a bracket. `list_cost` is captured verbatim, printed beside the derived figure, and **used for nothing** — it is a cross-check with no stable unit, and nothing but the derivation can detect it changing again. See D-047, which withdraws the forward-looking half of D-034 without disturbing A-1.
 2. **Develop against a subset.** Phase 4 and Phase 6 iterate on **three tickets only**: T-006, T-008, T-009. Those are the gates. Full ten-ticket runs happen at phase acceptance, not during iteration.
 3. **`max_iterations: 2` during development, 3 for the final gate run.** Cuts grader spend by a third while iterating. The three-pass cap only has to hold on the run that counts.
 4. **Outcomes on gate tickets only during development.** Full outcome coverage across all ten is a final-run property, and it is what §Goal claims. It is not needed to debug the SSE consumer.
@@ -423,11 +462,13 @@ Billing boundary: the Max subscription pays for Claude Code, the builder. API cr
 
 Do not build, do not claim, and record the reason in `docs/LIMITATIONS.md`:
 
-- **Hosted multiagent.** Available and public beta. Excluded by architecture choice: this workload is sequential, each step passes state to the next, and orchestration overhead buys nothing. Get the platform status right when saying so.
-- **Dreaming.** A real resource. `ant` v1.21.0 exposes `beta:dreams`. Excluded **by scope, not by availability**, and say it that way. Do not state its beta header, because you have not sent it.
-- **Self-hosted sandboxes.** Available. Not needed for seeded data.
-- **`mcp_oauth` credentials.** Vaults are in scope; per-end-user OAuth is not. `static_bearer` only.
-- **MCP tunnels.** A real resource. `ant` v1.21.0 exposes `beta:tunnels` and `beta:tunnels:certificates`. Built for reaching servers inside a private network. Wrong tool for a publicly reachable Vercel endpoint. Excluded by scope, not by availability.
+*Amended 2026-08-06 (A-19 and A-20, accepted).* Three of the entries below stated a platform status that `docs/reference/` does not support, and this section's own instruction is *"Get the platform status right when saying so."* The sweep behind the correction: across all eighteen pages, the strings `public beta`, `generally available`, `GA`, `research preview`, `limited preview` and `request access` return **exactly one hit** — `overview.md:104`. Anthropic labels no individual feature; everything sits under the product-wide beta at `overview.md:92-96`.
+
+- **Hosted multiagent.** Documented on the agent definition (`agent-setup.md:25`, the `multiagent` coordinator field) and in the event catalogue (`reference.md:40-41`, `:54-55`), under the product-wide beta. Excluded by architecture choice: this workload is sequential, each step passes state to the next, and orchestration overhead buys nothing. **Do not call it "public beta"** — that label is not in `docs/reference/`; it traces to `BLUEPRINT.md:92`, which SPEC's header rule subordinates to the docs.
+- **Dreaming.** A real resource; `ant` v1.21.0 exposes `beta:dreams` — attribute that to `ant --help`, not to the docs, which document no such command. `overview.md:104`: *"Within the beta, MCP tunnels and dreaming are in a more limited **research preview**. Request access to enable them."* So it is excluded **by scope and additionally gated behind an access request this build never made** — a stronger exclusion than the old "by scope, not by availability", which was simply wrong. Do not state its beta header: `dreaming-2026-04-21` appears in **zero** Anthropic pages, confirmed by sweep, and has never been sent.
+- **Self-hosted sandboxes.** Documented as one of the two environment types (`overview.md:42`, `environments.md:9`, `reference.md:89-101`). Not needed for seeded data. No per-feature availability label exists; do not claim one.
+- **`mcp_oauth` credentials.** Vaults are in scope; per-end-user OAuth is not. `static_bearer` only. Both are documented peers in the same field (`vaults.md:129`), so this genuinely is a scope choice.
+- **MCP tunnels.** A real resource; `ant` v1.21.0 exposes `beta:tunnels` and `beta:tunnels:certificates`. Built for reaching servers inside a private network — the wrong tool for a publicly reachable Vercel endpoint. Same correction as dreaming: `overview.md:104` puts tunnels in the **research preview** requiring an access request, so it is excluded by scope **and** by an access gate never requested.
 - **Scheduled deployments, webhooks, session threads.** Real features, not this workload.
 - **Next.js UI.** CLI plus Console traces is the demo surface.
 - **Any real customer data or live third-party system.** Seeded data only, always. State it as a design choice in one clause and move on.
@@ -447,8 +488,15 @@ Do not build, do not claim, and record the reason in `docs/LIMITATIONS.md`:
 | `tests/mcp-tools.test.ts` | Both tools return valid typed results for every seeded ID, and a typed not-found for `ACC-9999`, without throwing. Bearer check rejects a missing and a wrong token. |
 | `tests/decision-schema.test.ts` | `TriageDecision` accepts each valid disposition shape and rejects: auto_resolve with zero citations, auto_resolve with null draft, escalate with null reason, an invented category. |
 | `tests/events.test.ts` | Consumer replays `fixtures/session-events.jsonl` and produces the expected `ConsumerResult`; breaks on idle-with-terminal-stop_reason and does not break on idle-requires_action; survives a synthetic unknown event type; dedupes a replayed history page by event id. |
+| `tests/grader.test.ts` | The per-criterion parser runs against **real committed grader explanations**, never the hand-written fixture. All three verdict labels — `met`, `not met`, `partially met` — are counted, and `lastGradedSubmissionIndex` recovers the graded decision from the two traces that exposed D-056. |
+| `tests/memory.test.ts` | Memory predicates, plus the `SKILL.md` invariants whose removal is silent: the `/mnt/session/outputs/` write (D-032), no hardcoded mount slug (D-041), the frontmatter name matching the upload folder (D-033), and the injection literal byte-identical across three files. |
+| `tests/env-file.test.ts` | `.env.local` is never rewritten with a key dropped or a newline injected. **Plus the D-028 guard:** `env-file.ts` takes its path constant from `paths.ts` and not from the validating module, so this suite — and therefore this gate — runs from a clean clone. |
+| `tests/assertions.test.ts` | **The ship gate rehearsed offline.** Every assertion below is replayed against the committed Phase 6 artifacts for $0, so a live gate run cannot fail because a predicate is wrong. Each predicate is also exercised in both directions; a positive clause that cannot return false is worse than no clause. |
+| `tests/evidence.test.ts` | `docs/EVIDENCE.md` exists and carries what ship-gate condition 6 requires. Assertion 6's mechanical half, checked on every turn instead of at the end. |
 
-Two fixtures. `fixtures/session-events.jsonl` is a real trace, captured in Phase 2 and promoted byte-for-byte in Phase 3 (D-021). `fixtures/synthetic-events.jsonl` is hand-built and labelled as such: it carries the Phase-4 shape — a custom tool call, an idle with `requires_action`, and a grader cycle — that the Phase 2 agent version could not emit. Real and synthetic never share a file.
+**Five fixtures, and the rule is that real and synthetic never share a file.** Three are real traces, promoted byte-for-byte after the run that produced them (D-021's precedent): `session-events.jsonl` (Phase 2, promoted in Phase 3), `memory-handoff-real.jsonl` (Phase 5's T-010), and `grader-revision-real.jsonl` (Phase 6's T-001, the only committed evidence of a partial criterion enumeration). Two are hand-built and labelled as such: `synthetic-events.jsonl` carries the Phase-4 shape — a custom tool call, an idle with `requires_action`, a grader cycle — that the Phase 2 agent version could not emit, and `memory-events.jsonl` carries the memory shapes.
+
+*Amended 2026-08-06 (A-17, accepted, text only).* This said "Two fixtures" and named two. Phase 5 added two and Phase 6 added one. The separation rule the sentence exists to state was always intact and is worth keeping; only the count was stale. The reason the rule matters is visible in `tests/grader.test.ts`, which deliberately refuses to test the parser against the synthetic explanation — it matches no format the platform emits, and a parser tested only against it would be tested against a straw man.
 
 **The unknown-event claim is narrower than it reads.** The SDK filters incoming SSE frames against a hardcoded allowlist of event names (`core/streaming.js:56-101`), so a genuinely novel type is dropped before the consumer sees it. The default branch is reachable from fixture replay and from `sessions.events.list()`, both plain JSON, and on the live stream only from the three names that are on that allowlist but absent from the TypeScript union. See D-023.
 
@@ -474,9 +522,15 @@ Machine-checked assertions, one per condition:
 | 1 | Every ticket yields a `ConsumerResult` with `terminatedBy !== 'timeout'`, a non-null `decision`, and at least one `agent.mcp_tool_use` across the run. Console trace URL printed per session. |
 | 2 | `decisions['T-006'].disposition === 'escalate'` and `escalation_reason` is non-empty. Category is not asserted; any of the five is acceptable on a genuinely mixed ticket. |
 | 3 | `decisions['T-008'].disposition === 'escalate'` and `suspected_injection === true`, and no ticket in the run has a `draft_reply` containing a refund promise absent from its citations. |
-| 4 | Before T-010, `memory_stores.memories.list` shows `/accounts/ACC-2004.md` written during T-001's session. During T-010, the trace contains an `agent.tool_use` read of a path under the memory mount, and `decisions['T-010'].citations` includes a citation referencing the prior issue. |
-| 5 | Every ticket produced at least one `span.outcome_evaluation_end` carrying `result` and a non-empty `explanation`; T-006 and T-008 both did. No `iteration` value exceeds 2. **Every graded ticket produced at least one explanation naming all five rubric criteria, each with a verdict** — parsed host-side by `src/grader.ts`. Per ticket, not per evaluation: a `needs_revision` explanation opens *"the following criteria are not fully met"* and enumerates **only the failures**, so the full enumeration lives in the terminal `satisfied` explanation, which every ticket reaches. See D-055. Total grader token usage summed from the end events and printed. |
+| 4 | **Three proofs, all host-side.** (a) A memory version for the writer's path is attributed by the platform to the *writer's own session id*, via `memoryVersions.list`'s `session_id` filter with `created_by.session_id` re-checked host-side. (b) The reader's trace contains an `agent.tool_use` read under the session's own `mount_path` — read from the resource, never constructed — whose paired `agent.tool_result` returns the writer's record. (c) At least one handoff carries a **memory-exclusive token**: a string present in the memory file and in **no** `agent.mcp_tool_result` in the same trace. Every handoff is printed, named or not, so a thin result cannot hide behind the existential. |
+| 5 | Every ticket produced at least one `span.outcome_evaluation_end` carrying `result` and a non-empty `explanation`; T-006 and T-008 both did. No `iteration` value exceeds 2. **Every graded ticket produced at least one explanation naming all five rubric criteria, each with a verdict** — parsed host-side by `src/grader.ts`. Per ticket, not per evaluation: a `needs_revision` explanation opens *"the following criteria are not fully met"* and enumerates **only the failures**, so the full enumeration lives in the terminal `satisfied` explanation. See D-055. **Grader spend is DERIVED from `session.usage` and printed with its method named — it is not summed from the end events.** |
 | 6 | `docs/EVIDENCE.md` exists and contains, for each of T-006, T-008, and the T-001 to T-010 memory handoff: the committed trace excerpt, the resulting `TriageDecision` JSON, and a Console trace screenshot. Plus one screenshot of a `span.outcome_evaluation_end` showing per-criterion feedback. `/defend` answered with the laptop closed. |
+
+*Amended 2026-08-06 (A-12 and A-15, accepted).*
+
+**Assertion 4** previously ended *"and `decisions['T-010'].citations` includes a citation referencing the prior issue."* That clause cannot fail when the feature is absent, which is disqualifying for the gate that proves memory. Phase 4 ran all ten tickets with **no memory store attached to anything**, and `docs/evidence/phase-4-decisions.json` shows T-010 citing `lookup_account.known_issues` = `duplicate_charge:CHG-88213` — ACC-2004's record carries the same fact through MCP, so the clause passed with memory switched off. Worse, it is **literally unmet by the runs that do prove memory**: T-010 escalates, `escalate` requires no citations, and both the Phase 5 and Phase 6 decisions carry `citations: []` with the memory-exclusive token in `escalation_reason`. The three proofs above are what actually ran. See D-045 and D-057.
+
+**Assertion 5** previously ended *"Total grader token usage summed from the end events and printed."* That total cannot exist. `span.outcome_evaluation_end.usage` is **zero-filled on every evaluation this build has ever seen** — three in Phase 4, all eighteen in Phase 6 — which is the measurement A-1 already used to rewrite § Cost controls #1 in Phase 4; assertion 5 was simply missed at the time. Summing it would print a permanent `0` inside the ship gate. `src/cost.ts` derives the grader's share from `session.usage` instead and labels it as derived, with an explicit note when the end-event usage was zero. Same ruling as A-1, applied one section later.
 
 Supporting assertions on the design-intent tickets:
 
@@ -545,7 +599,7 @@ Updated at every phase boundary. A fresh session reads this first to learn where
 | 4 | Triage core plus the skill | All ten tickets process. T-006 escalates. T-008 refused and escalated. T-009 fails gracefully | ✅ **Closed 2026-08-04** — 10/10 decided; T-006 escalate; T-008 escalate + `suspected_injection: true`; T-009 escalate, `draft_reply: null`, citing `lookup_account.found: false`. Agent **v4**, skill `skill_01GUEGUQoq8ZYhEVZueMxb7o`. **A-4 confirmed and mitigated** (D-032). Two `events.ts` bugs fixed (D-029, D-030); 82 tests green. Spend: **~$0.55**, measured from the platform's own `list_cost` (D-034), not derived |
 | 5 | Memory | Memory written in session A provably read and referenced in session B, proven in the trace | ✅ **Closed 2026-08-05** — agent **v5**, skill version `1785915306195089`. T-001 (`sesn_01YQ2JV8…`) wrote `/accounts/ACC-2004.md`, `operation: created`, attributed by the platform to that session id; T-010 (`sesn_01MsMEFN…`) read it back and the sandbox's own `agent.tool_result` returned T-001's record; T-010's decision names **T-001**, a token carried by no MCP result and no ticket field. Mount path **read** from `mount_path`, never constructed. T-008 probe: injection escalated **and** its memory entry is the fixed literal only. 122 tests green (was 82), 3 mutation checks. Spend: **$0.1018** |
 | 6 | Outcomes and the grader | Per-criterion rubric score for at least T-006 and T-008; iteration cap holds | ✅ **Closed 2026-08-05** — `agent/rubric.md`, five criteria, uploaded once as `file_011CdjL8WsMZFQKo7iTQM6MG` (4353 bytes) and sent as `rubric: {type:'file', file_id}`. Ten tickets graded: **18 `span.outcome_evaluation_end`, every one carrying a result and a non-empty explanation**; T-006 and T-008 both `satisfied` at iteration 0 with 5/5 criteria; **highest `iteration` 2** at `max_iterations: 3`. All 7 `satisfied` evaluations enumerate all five criteria — the only result that does (D-055). A-7 and A-8 ruled, accepted and applied. 161 tests green (was 122), 5 mutation checks. Spend: **$1.60** ceiling across three live runs |
-| 7 | Docs, tests, verification | `pnpm -s test` green; Stop hook blocks a dirty turn; commit hook rejects an AI-attribution string | ⬜ |
+| 7 | Docs, tests, verification | `pnpm -s test` green; Stop hook blocks a dirty turn; commit hook rejects an AI-attribution string | ✅ **Closed 2026-08-06** — all three proven by command output. **198 tests green** (was 161) across 8 suites, and the suite is now **hermetic**: 198 pass with `.env.local` absent, closing D-028, which had made the Stop hook gate unrunnable from a clean clone. `.claude/verify.sh` **blocked a deliberately dirty turn (exit 2)** and passed clean (exit 0). `.githooks/commit-msg` **rejected a real `git commit` carrying `Co-Authored-By` with HEAD unchanged**, and accepted a clean message; `core.hooksPath` set. `pnpm verify:live` exists. Six missing artifacts written — `verify.sh`, `commit-msg`, `EVIDENCE.md`, `AGENT_DESIGN.md`, `LIMITATIONS.md`, `README.md`. **Six unimplemented ship-gate assertions closed and rehearsed against committed Phase 6 artifacts for $0** — all pass, including `unsupportedClaims` clean across all ten decisions, which measures D-039's two grounding defects as **fixed by rubric criterion 4**. All fourteen amendments ruled: twelve applied, A-14 declined, A-18 implemented. Two destructive flag defaults removed. Spend: **$0.00** |
 | 8 | Defend | Every question in blueprint §14 answered from memory with the laptop closed | ⬜ |
 
 Phase 8 no longer includes the walkthrough video — cut by decision on 2026-08-02, see *Out of scope*.

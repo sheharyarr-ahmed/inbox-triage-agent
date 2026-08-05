@@ -33,9 +33,28 @@ export type Ticket = z.infer<typeof Ticket>;
  * `is_error: true` CAN prompt a corrected re-submission but cannot be relied on
  * to — the agent may answer with a plain `agent.message` and end the turn, which
  * leaves a ticket with no valid decision and no timeout to blame.
+ *
+ * `escalated_by_iteration_cap` is amendment A-18, ruled 2026-08-06 in Phase 7.
+ * SPEC § Bounded iteration names TWO bounds and says "A ticket that exhausts
+ * either bound escalates by definition." The wall clock had a member; the
+ * grader-pass cap did not, so a ticket the grader never accepted was recorded
+ * `decided` — true, and it loses the fact that carries the meaning.
+ *
+ * It went live before it was ruled. Phase 6's acceptance run put THREE tickets
+ * here — T-002, T-003 and T-007 all ended `max_iterations_reached` — and D-056
+ * found that two of them recorded a disposition the grader had argued against.
+ * A summary reading "10 decided" on that run is the D-055 failure exactly:
+ * silence reads as "all ten were accepted".
+ *
+ * Narrow on purpose. It fires on `max_iterations_reached` and nothing else,
+ * because that is the bound SPEC's sentence names. `interrupted` is what the
+ * wall clock produces and already has `escalated_by_timeout`; `failed` has never
+ * been observed and is REPORTED rather than folded in, so a new terminal result
+ * cannot arrive disguised as a known one.
  */
 export type TicketOutcome =
   | "decided"
   | "escalated_by_timeout"
   | "escalated_by_validation"
+  | "escalated_by_iteration_cap"
   | "errored";

@@ -9,9 +9,14 @@
 
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
 import { upsertEnvFile } from "../src/env-file.js";
+
+/** Resolved locally rather than imported from `config.ts`, for the reason this
+ *  file's second describe block exists. `tests/events.test.ts` does the same. */
+const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..", "src");
 
 const ORIGINAL = [
   "# Copy to .env.local and fill in.",
@@ -102,5 +107,47 @@ describe("upsertEnvFile", () => {
 
     expect(() => upsertEnvFile({ "BAD KEY": "x" }, path)).toThrow(/invalid key/);
     expect(readFileSync(path, "utf8")).toBe(before);
+  });
+});
+
+/**
+ * docs/DECISIONS.md D-028. This suite is the one that made `pnpm -s test`
+ * non-hermetic: it imported `upsertEnvFile`, which imported `ENV_PATH` from
+ * `src/config.ts`, which runs `export const env = load()` at module scope and
+ * throws unless four keys are present. So the whole suite failed at import
+ * without `.env.local` — and SPEC § Verification makes this suite the Stop hook
+ * gate, which therefore could not run from a clean clone or in CI.
+ *
+ * The fix is held here rather than by memory, because its failure signature is
+ * invisible to anyone whose `.env.local` happens to exist — which is everyone
+ * who has ever worked on this repo. A static import check catches the
+ * regression on a machine where the runtime symptom cannot reproduce.
+ */
+describe("the offline suite stays hermetic (D-028)", () => {
+  it("env-file.ts takes ENV_PATH from paths.ts, never from config.ts", () => {
+    const source = readFileSync(join(SRC, "env-file.ts"), "utf8");
+
+    expect(source).toMatch(/import\s*\{[^}]*\bENV_PATH\b[^}]*\}\s*from\s*"\.\/paths\.js"/);
+    expect(source).not.toMatch(/from\s*"\.\/config\.js"/);
+  });
+
+  it("paths.ts imports only node: builtins and reads no environment", () => {
+    const source = readFileSync(join(SRC, "paths.ts"), "utf8");
+
+    const imports = [...source.matchAll(/from\s*"([^"]+)"/g)].map((m) => m[1]);
+    expect(imports.length).toBeGreaterThan(0);
+    for (const specifier of imports) {
+      expect(specifier).toMatch(/^node:/);
+    }
+    // A path constant derived from process.env would reintroduce the coupling
+    // through the back door, with no import to notice.
+    expect(source).not.toContain("process.env");
+  });
+
+  it("config.ts still re-exports both names, so existing callers are unchanged", () => {
+    const source = readFileSync(join(SRC, "config.ts"), "utf8");
+
+    expect(source).toMatch(/export\s*\{[^}]*\bENV_PATH\b[^}]*\}/);
+    expect(source).toMatch(/export\s*\{[^}]*\bREPO_ROOT\b[^}]*\}/);
   });
 });

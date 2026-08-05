@@ -13,7 +13,12 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { ENV_PATH } from "./config.js";
+
+// From `./paths.js`, not `./config.js`. `config.ts` validates the environment at
+// module scope and throws without it, which made this module — and therefore
+// `tests/env-file.test.ts` — unrunnable from a clean clone. The Stop hook gate
+// runs this suite, so the gate could not run either. See docs/DECISIONS.md D-028.
+import { ENV_PATH } from "./paths.js";
 
 const KEY_LINE = /^([A-Za-z_][A-Za-z0-9_]*)=/;
 

@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "smoke": "tsx src/smoke-outcomes.ts",
     "provision": "tsx src/deploy.ts",
-    "session": "tsx src/run.ts"
+    "session": "tsx src/run.ts",
+    "verify:live": "pnpm -s test && tsx src/run.ts --outcome all --label phase-7 --max-iterations 3"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

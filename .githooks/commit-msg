@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+#
+# Reject AI-attribution strings in commit messages.
+#
+# SPEC § Files: ".githooks/commit-msg — rejects AI-attribution strings."
+# SPEC § Repo discipline: "`.githooks/commit-msg` rejects a test commit
+# containing `Co-Authored-By` · `git config core.hooksPath .githooks` set so the
+# hook travels with the repo."
+#
+# `core.hooksPath` is the point. `.git/hooks/` is not cloned and not committed,
+# so a hook living there protects one machine. `.githooks/` is a tracked
+# directory, and one `git config core.hooksPath .githooks` per clone points at
+# it. The command is in README.md because git will not set it for you.
+#
+# WHY THE PATTERNS ARE ANCHORED THE WAY THEY ARE
+#
+# `Co-authored-by:` is a git *trailer*: a key at the start of a line, near the
+# end of the message. Matching it anywhere in the text would reject this repo's
+# own commit messages, which have to be able to say the words — the commit that
+# adds this file describes what it rejects. That is D-040's lesson: a checker
+# that fires on correct work does not merely waste attention, it makes the true
+# positive look like more of the same. So trailers are anchored to line start,
+# and only the markers that cannot occur in honest prose are matched loose.
+#
+# Comment lines are stripped first. git removes them from the final message, but
+# the commit-msg hook receives the file *before* that, so a commented-out
+# template line would otherwise be judged as content the author never wrote.
+#
+# LIMIT, stated rather than implied: `git commit --no-verify` skips this hook
+# entirely, and so does any path that writes a commit object directly. This
+# enforces a convention against accident, not against intent.
+
+set -uo pipefail
+
+msg_file="${1:?commit-msg hook expects the message file as \$1}"
+
+# Strip comments and the scissors section; judge only what will be committed.
+body="$(sed -e '/^#/d' -e '/^------------------------ >8 ------------------------$/,$d' "$msg_file")"
+
+fail() {
+  {
+    echo "commit-msg: REJECTED — $1"
+    echo
+    echo "  matched: $2"
+    echo
+    echo "SPEC § Repo discipline: no AI-attribution strings in commit messages."
+    echo "Describe what was proven and who decided it. The tooling is not a co-author."
+  } >&2
+  exit 1
+}
+
+# 1. The git trailer forms, anchored to line start so prose can discuss them.
+if hit="$(grep -n -i -E '^[[:space:]]*co-authored-by:' <<<"$body")"; then
+  fail "commit message carries a Co-authored-by trailer." "$hit"
+fi
+
+if hit="$(grep -n -i -E '^[[:space:]]*signed-off-by:.*(claude|anthropic)' <<<"$body")"; then
+  fail "commit message carries a Signed-off-by trailer naming the model or vendor." "$hit"
+fi
+
+# 2. Markers that do not occur in honest prose about this repo.
+if hit="$(grep -n -i -E 'generated with[[:space:]]*\[?[[:space:]]*(claude|anthropic)' <<<"$body")"; then
+  fail "commit message carries a 'Generated with' attribution." "$hit"
+fi
+
+if hit="$(grep -n -E '🤖' <<<"$body")"; then
+  fail "commit message carries the robot attribution marker." "$hit"
+fi
+
+if hit="$(grep -n -i -E 'noreply@anthropic\.com' <<<"$body")"; then
+  fail "commit message carries an Anthropic noreply address." "$hit"
+fi
+
+exit 0

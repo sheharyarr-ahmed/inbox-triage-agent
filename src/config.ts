@@ -12,12 +12,18 @@
  */
 
 import { config as loadDotenv } from "dotenv";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
-export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const ENV_PATH = resolve(REPO_ROOT, ".env.local");
+import { ENV_PATH, REPO_ROOT } from "./paths.js";
+
+/**
+ * Re-exported so every existing caller keeps importing these from here. The
+ * definitions moved to a leaf module that imports nothing and validates nothing,
+ * which is what makes `tests/env-file.test.ts` runnable without `.env.local`
+ * present — the module below throws at import, and the Stop hook gate cannot
+ * depend on a file a clean clone does not have. See docs/DECISIONS.md D-028.
+ */
+export { ENV_PATH, REPO_ROOT };
 
 loadDotenv({ path: ENV_PATH, quiet: true });
 

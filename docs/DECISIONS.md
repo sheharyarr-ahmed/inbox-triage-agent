@@ -1643,6 +1643,265 @@ reason that was not a defect.
 
 ---
 
+## Phase 7 — docs, tests, verification
+
+### D-058 · D-028 closed, and the guard is a static check because the symptom cannot reproduce here
+
+`pnpm -s test` is SPEC § Verification's Stop hook gate and it could not run from a
+clean clone. Chain: `tests/env-file.test.ts` imports one symbol from
+`src/env-file.ts`, which imported `ENV_PATH` from `src/config.ts`, which runs
+`export const env = load()` at module scope and throws without four keys.
+
+D-028 named three fixes and called this one smallest, and reading the code
+confirmed it is smaller still than it looked: `env-file.ts` uses `ENV_PATH`
+**only in its CLI block**, never inside `upsertEnvFile`, which takes `path` as a
+required parameter by deliberate design. So the test imported a function with no
+need of `config.ts` at all; the coupling was purely a module-scope side effect.
+
+`src/paths.ts` holds `REPO_ROOT` and `ENV_PATH` — two constants derived from
+`import.meta.url`, both of which already sat *above* the `loadDotenv` call — and
+imports nothing but `node:`. `config.ts` re-exports both, so every existing
+caller is untouched and keeps its fail-fast behaviour. Precedent: `grader.ts:62`
+already keeps itself "pure and free of `config.ts` (D-028)" by hardcoding its
+anchors.
+
+**Measured, both directions.** With `.env.local` moved aside: **161 → 164 tests
+pass, exit 0**, against D-028's recorded failure of `Test Files 1 failed`.
+
+**The guard is a static import check, and that is the point.** The runtime
+symptom is invisible to anyone whose `.env.local` exists — which is everyone who
+has ever worked on this repo, which is why the defect survived four phases. So
+`tests/env-file.test.ts` asserts that `env-file.ts` imports from `paths.js` and
+not `config.js`, that `paths.ts` imports only `node:` builtins and never reads
+`process.env`, and that `config.ts` still re-exports both names. Mutation-checked
+per D-027: reintroducing the import fails **1 test with `.env.local` present**
+and collapses the whole file to an import error without it.
+
+### D-059 · The Stop hook, and a mutation that correctly did not bite
+
+`.claude/verify.sh` runs `pnpm -s test` and nothing else, per SPEC § Files. Not
+typecheck, not lint: the gate fires on every turn, and anything touching the
+network would bill the build for the act of writing about it.
+
+It was already wired — `~/.claude/settings.json` has execed
+`${CLAUDE_PROJECT_DIR}/.claude/verify.sh` on Stop since Phase 0, guarded on the
+file being executable. Four phases ran with the hook configured and the script
+absent, which is a silent no-op and exactly the shape of failure this phase
+exists to remove. Exit 2 blocks the turn and puts the failure on stderr, where it
+is fed back rather than merely reported.
+
+**Proven by blocking.** The first attempt at a deliberate regression **did not
+turn the suite red, and was right not to.** `SKILL.md` carries the
+`/mnt/session/outputs/<ticket_id>.json` string twice — once as procedure step 6,
+once restated under `## Submitting` — and removing only the restatement removes
+no instruction. `tests/memory.test.ts` asserts the string is present, not that it
+is present twice, so it correctly stayed green. Removing the step itself blocked
+the turn: **exit 2**, with the failing test on stderr; reverting returned exit 0.
+
+Worth recording because D-048's mutation table says this mutation fails one test,
+and a reader reproducing it could remove the wrong occurrence and conclude the
+guard is broken. The guard is fine. The mutation has to remove the behaviour, not
+a sentence about it.
+
+### D-060 · The commit-msg hook is anchored so the repo can discuss what it rejects
+
+`.githooks/commit-msg` rejects AI-attribution, and `git config core.hooksPath
+.githooks` is set so it travels with the repo — `.git/hooks/` is neither cloned
+nor committed, so a hook living there protects one machine.
+
+**The patterns are anchored to line start for the git-trailer forms**, and that
+is a design decision rather than an implementation detail. `Co-authored-by:` is a
+*trailer*: a key at the start of a line. Matching it anywhere in the text would
+reject this repo's own commit messages — the commit adding the hook has to be
+able to name what it rejects, and so does this paragraph. That is D-040's lesson
+applied before the fact: a checker that fires on correct work makes the true
+positive look like more of the same. Only markers that cannot occur in honest
+prose about this repo are matched loose: `Generated with [Claude…`, the robot
+emoji, and `noreply@anthropic.com`.
+
+Comment lines are stripped first. `git` removes them from the final message, but
+the hook receives the file **before** that, so a commented-out template line
+would otherwise be judged as content the author never wrote.
+
+**Proven six ways by direct probe** — a clean message and prose *about* the
+trailer both ACCEPTED; the trailer itself, a `Generated with` marker, a
+`Signed-off-by: Claude`, all REJECTED; a commented-out trailer ACCEPTED — and
+then by real `git commit`: a message carrying `Co-Authored-By` exited 1 with
+**HEAD unchanged**, and a clean message committed normally.
+
+**Stated limit:** `git commit --no-verify` skips the hook entirely. This enforces
+a convention against accident, not against intent.
+
+### D-061 · `verify:live` is a script over the existing driver, not a second entrypoint
+
+SPEC § Verification invokes `pnpm verify:live` by name and D-020 recorded that it
+had no entrypoint. Considered: (a) a new `src/verify.ts` wrapping the driver;
+(b) an offline replay mode inside `run.ts`; (c) a package.json script composing
+what already exists.
+
+Chose (c): `pnpm -s test && tsx src/run.ts --outcome all --label phase-7
+--max-iterations 3`, invoked as `pnpm verify:live --budget <n>`.
+
+Option (a) is harder than it looks and worse than it sounds. `main()` in `run.ts`
+is **not exported** and is called at module scope, so any `import "./run.js"`
+immediately starts a live ten-ticket run against whatever `process.argv` happens
+to hold. Exporting it to satisfy a wrapper would restructure the file that
+produced every committed trace, to add no capability.
+
+The composition is also the honest shape of the gate. SPEC's ship gate has an
+offline half and a live half, and `&&` is exactly that: the suite carries
+assertion 6's `docs/EVIDENCE.md` check and the replay of assertions 1-5 against
+committed artifacts, and the driver carries the live run. `--max-iterations 3` is
+SPEC § Cost controls #3's gate-run value against the dev default of 2. `--budget`
+is appended by the caller and is not in the script, because SPEC requires it to
+be a deliberate decision per run — see D-063.
+
+### D-062 · The ship gate rehearsed against committed artifacts, before a dollar was spent
+
+**Six of SPEC § Verification's assertions had no implementation at all**, found
+by reading rather than by a failing run: assertion 1's *"at least one
+`agent.mcp_tool_use` across the run"* was counted and never gated; assertion 3's
+second clause was implemented but printed under a header reading *"ship-gate
+groundwork (Phase 7, reported not gated)"*; the T-005 and T-007-ordering
+supporting assertions did not exist; T-009's positive citation clause was
+unchecked; and assertion 6 had neither a file to check nor code to check it.
+
+Three new predicates went into `src/assertions.ts`, whose docblock has said since
+Phase 4 that it exists so these "can be unit-tested offline and reused by
+Phase 7's ship gate" — a claim that was itself untested, because there was no
+`tests/assertions.test.ts`.
+
+**`mcpCallBeforeSubmit` compares the FIRST submission, not the last.** A graded
+ticket submits again on every revision cycle (D-056), so "the last submit" drifts
+later on exactly the tickets that argued with the grader — and a trace whose
+first submission preceded every lookup would pass. The first submission is the
+one that had to have been informed.
+
+**`citesNotFound` is `$`-anchored on the reference segment.** A looser
+`includes("found")` is D-040's failure with the sign reversed: not crying wolf,
+but passing bad work. It anchors on `lookup_account.found`, which D-037 pinned in
+`SKILL.md` for exactly this reason.
+
+**Then every one was replayed over the committed Phase 6 run, for $0.** All nine
+gates pass: T-005 `decline` citing `refund_window_status`; T-006 `escalate`;
+T-007's `lookup_orders` at event 16 against its first submit at 27; T-008
+`escalate` with `suspected_injection: true`; T-009 citing `lookup_account.found`
+with zero invented fields; 16 MCP calls across the run; and **`unsupportedClaims`
+clean across all ten decisions**.
+
+That last one is a result, not a formality. D-039 recorded two uncited-claim
+defects in Phase 4 — T-005's uncited "ORD-4201, $89" and T-004's invented
+"5-7 business days" — and recorded that one round of prompt-tightening did not
+hold. **Both are gone in Phase 6**, which is rubric criterion 4 correcting what
+the prompt could not, measured against committed artifacts at no cost. It is also
+why assertion 3's second clause could be promoted from reported to gated without
+gambling the gate run on it.
+
+Mutation-checked per D-027, four ways: `citesNotFound` always true → 3 fail;
+`citesRefundWindow` always true → 1 fail; `mcpCallBeforeSubmit` keyed on the last
+submission → 1 fail; the ordering comparison dropped → 3 fail.
+
+**And assertion 1 was restated to what SPEC says.** It gated
+`every(r => r.outcome === "decided")`, a proxy stricter than SPEC's *"terminatedBy
+!== 'timeout'`, a non-null `decision`"*. A-18 made the difference material: three
+Phase 6 tickets now record `escalated_by_iteration_cap`, and they terminated
+cleanly and produced decisions, so they satisfy assertion 1 — the proxy would
+have failed the ship gate for a condition SPEC does not impose.
+
+### D-063 · Two defaults removed, because both were destructive
+
+**`--label` defaulted to `phase-4`,** and `runTicket` truncates each trace file
+before appending. So `pnpm session` — the shortest command in the repo, and the
+one a reader is likeliest to try — silently destroyed ten committed Phase 4
+traces and `phase-4-decisions.json`. No collision guard existed anywhere in the
+write path. Committed evidence is the one artifact this build cannot regenerate
+cheaply; the Phase 4 run cost ~$0.55 and its agent version no longer exists.
+
+**`--budget` defaulted to `2.50`** while SPEC § Cost controls, amended
+2026-08-05, says it *"must be passed explicitly on every live run, not left to
+its default."* That was a sentence in a document, which is the same class of
+protection as the workspace hard limit that had just been removed. It is now a
+throw on the graded path, plus a positive-number check.
+
+Both are required flags now. Considered instead: a guard that refuses to
+overwrite an existing label's files. Rejected as too clever — it would need to
+know which labels are committed, and the honest fix is that the operator names
+the run. Proven: all three refusals fire **before any session is created**, and
+the twelve Phase 4 trace files are intact.
+
+### D-064 · The fourteen amendments, ruled
+
+Every amendment raised in this build is now ruled. Twelve accepted and applied to
+`SPEC.md`; one declined with its reasoning applied; one accepted and implemented.
+The table above carries each ruling. Three entries are worth their own note.
+
+**A-14 declined, and the decline is written into SPEC rather than only here.**
+The three `system` guardrails are scoped to "ticket content", and memory content
+is not ticket content. Widening rule 1 is more durable and costs an agent
+version. It was declined because `instructions` reaches the system prompt of
+every session **this driver** creates, which is all of them (`memory.md:380`), so
+the widening buys durability against a caller that does not exist — while making
+the ship-gate run the first outing of an unproven agent version. SPEC § The
+guardrail split now names `instructions` as a second legitimate home and states
+the residual gap, so the next reader inherits the reasoning and not just the
+outcome.
+
+**A-18 accepted, and it is the only ruling that changed a published shape.**
+`escalated_by_iteration_cap` fires on `max_iterations_reached` and nothing else.
+Derived and proven against the committed Phase 6 grader results before any code
+ran live: it reclassifies **exactly** T-002, T-003 and T-007 — the three D-056
+identified — and leaves the seven `satisfied` tickets alone, including T-005 and
+T-010, which each took two evaluations and would have been swept in by a naive
+"more than one evaluation" rule.
+
+**The decision itself is never rewritten.** Implementing "escalates by
+definition" by overriding the disposition was considered and rejected outright:
+the host records what the agent submitted and labels how it ended. A driver that
+edited a disposition to match a rule would destroy the property every artifact in
+`docs/evidence/` depends on.
+
+### D-065 · The D-053 counterweight is deferred, with its price recorded
+
+D-053 left one lever open: `SKILL.md:179-196` and `agent.yaml:41-43` state the
+cost of guessing — *"Guessing is the failure"* — and never the cost of
+over-escalating. The workspace cap's removal made it affordable, and Phase 7 was
+handed the measurement needed to decide.
+
+**Ruled by the operator: not in Phase 7.** Provisioning is $0 — a new skill
+version and agent v6 cost nothing to mint. Knowing whether it worked is not.
+D-053 measured the criterion-3 correction **unstable across two runs one hour
+apart with everything else identical**, so a single run cannot answer the
+question; two ten-ticket graded runs at ~$1.23 ceiling plus a third for the gate
+on the winning version is roughly **$2.50-3.70 of $10.38**.
+
+What it buys is movement on T-001, T-003 and T-010 — tickets on which SPEC states
+**no assertion at all**, and where D-039 already recorded that over-escalation is
+the *safe* direction of error and every escalation cited real records.
+
+What it risks is the two conditions the ship gate turns on. The rubric protects
+T-006 and T-008 "by construction rather than by ticket id", but the counterweight
+acts on the **agent**, not the grader, and it would be the version that runs the
+gate. Both currently pass 5/5 at iteration 0 on both Phase 6 runs. And a hard
+criterion-3 failure on T-006 is precisely the trigger for SPEC § Model escalation
+path — so the cheapest-looking remaining lever is also the one most likely to
+open the most expensive path in the spec.
+
+**Recorded as the defend answer**, because it is a better one than a second
+partial result would be: the rubric lever was tried, measured, and reported
+honestly as partial — one of four tickets moved, 3× cost on the tickets it argued
+with, unstable across runs, three tickets driven into the cap. The prompt lever
+was priced and declined against a gate it could not improve.
+
+**SPEC § Model escalation path is confirmed NOT triggered.** It fires on a
+measured failure of rubric criterion 3 or 5 on T-006 or T-008. Both were
+`satisfied` at iteration 0 with 5/5 criteria on both Phase 6 runs, and the
+run-level negative control held on every evaluation. The build stays on
+`claude-haiku-4-5`. Budget headroom is not a trigger — SPEC § Cost controls says
+it outright: *"having the money to run them is not evidence that they are
+needed."*
+
+---
+
 ## Proposed `SPEC.md` amendments
 
 SPEC § Subagents: *"A finding that contradicts this spec is escalated to the
@@ -1670,20 +1929,47 @@ criteria does not make them quotable, because the grader strips the numbers. See
 D-052. **A-9 through A-14 remain unruled**, and A-15 through A-18 are new; none
 of the eight blocks Phase 7, and the batch is listed below.
 
+**Status, as of Phase 7 (2026-08-06). EVERY AMENDMENT RAISED IN THIS BUILD IS NOW
+RULED.** The batch of ten that had accumulated across Phases 4, 5 and 6 was put
+up at this boundary, and four more were raised during Phase 7's own verification
+pass and ruled alongside them.
+
+- **Twelve accepted and applied to `SPEC.md`:** A-9, A-10, A-11, A-12, A-13,
+  A-15, A-16, A-17, and the four new ones, A-19 through A-22. All twelve are
+  text-only — the code was already correct on every one, which is itself the
+  finding: SPEC had drifted from a build that was right.
+- **A-14 declined**, with the reasoning written into `SPEC.md` rather than left
+  in a log. The agent stays at v5.
+- **A-18 accepted and implemented.** `TicketOutcome` gains
+  `escalated_by_iteration_cap`. This is the only one of the fourteen that
+  changed a published shape.
+
+**The four raised in Phase 7 were each verified against the live committed doc
+before being raised**, per SPEC § Subagents' rule that a contradicting finding is
+escalated, never silently applied — the same order D-002 set in Phase 0. Three of
+them (A-19, A-20, A-21) are the same class of defect: a platform-status claim
+sourced to `BLUEPRINT.md` rather than to `docs/reference/`, in a spec whose own
+header says the docs win. A-22 is the one that matters most, because it is a
+**guardrail** claim.
+
 | # | Subject | Recommendation |
 |---|---|---|
 | A-7 | Condition 5 asks for a "per-criterion rubric score" that has no structured form | ✅ **ACCEPTED 2026-08-05, APPLIED, mechanism corrected.** Restated as "an explanation naming each rubric criterion and its verdict". The filed remedy — number the criteria — was measured to fail: the Phase 4 probe numbered them and the grader stripped every number. The anchor is the criterion's echoed opening text. See D-052. |
 | A-8 | § Session topology step 3 and § Cost controls #4 cannot both hold | ✅ **ACCEPTED 2026-08-05, APPLIED.** `define_outcome` for graded runs, `user.message` for ungraded, never both on one session. Step 3 rewritten. Phase 6 re-proved the gate tickets under `define_outcome` rather than assuming Phase 4/5's results transferred. |
-| A-9 | § Runtime configuration pins `version: "1"`; custom skill versions are epoch strings | **Accept, text-only.** Already correct in code. Phase 5 minted `1785915306195089`, which is the third such value; `"1"` is not a value the API returns. |
-| A-10 | § Decision capture rests on an unsourced "one to three second Files API indexing lag" | **Accept.** Drop the clause. Replace it, if anything, with the reason the custom tool earned in Phase 4: it returns the decision to the host synchronously, so a malformed payload can be rejected and corrected, which a file cannot do. The other two stated reasons stand unaided. |
-| A-11 | § Memory's mount path is wrong and the failure is silent | **Accept.** The only one whose cost is data loss with no error signal. |
-| A-12 | § Verification assertion 4's citation clause is satisfied with no memory attached | **Accept.** Measured against the committed Phase 4 baseline. |
-| A-13 | § Cost controls #1 now points at `list_cost`, whose units moved | **Accept.** Keep `session.usage` authoritative for tokens; stop treating `list_cost` as a dollar figure. |
-| A-14 | § The guardrail split's three `system` rules do not cover memory content | **Rule either way, and the gap is closed meanwhile.** The Phase 5 mitigation is in `instructions`, which reaches the system prompt on every session this driver creates. Widening rule 1 is more durable and costs an agent version. |
-| A-15 | § Verification assertion 5 asks for a grader token sum that cannot exist | **Accept.** The clause *"Total grader token usage summed from the end events and printed"* is unobtainable: `span.outcome_evaluation_end.usage` is zero-filled on every evaluation this build has ever seen — three in Phase 4, and every one in Phase 6. `cost.ts` prints the honest warning instead and derives the grader share from `session.usage`. A-1 amended § Cost controls to match in Phase 4; assertion 5 was simply missed. Same ruling, applied one section later. |
-| A-16 | § The SSE consumer says `_start` and `_ongoing` carry fields they do not | **Accept, text-only.** SPEC asks for grader progress *"from `span.outcome_evaluation_start`, `_ongoing`, and `_end`, including `result`, `explanation`, `iteration`, and the `usage` block"*. Only `_end` carries `result`, `explanation` or `usage`; `_start` and `_ongoing` carry `{id, iteration, outcome_id, processed_at, type}` and nothing else (`events.d.ts:1017-1059`). `src/events.ts` is already correct; only the sentence is loose. |
-| A-17 | § Verification says "Two fixtures"; there are five | **Accept, text-only.** Phase 5 added `memory-events.jsonl` (synthetic) and `memory-handoff-real.jsonl` (real, D-048); Phase 6 adds `grader-revision-real.jsonl` (real, D-055). The real/synthetic separation rule the sentence exists to state is intact and worth keeping; only the count is stale. |
-| A-18 | `TicketOutcome` has no member for a ticket the grader could not satisfy | **Report, do not choose — SPEC is silent.** `types.ts:37-41` offers `decided`, `escalated_by_timeout`, `escalated_by_validation`, `errored`. A ticket ending `max_iterations_reached` or `failed` is currently recorded as `decided` if a valid submission was accepted, which is true but loses the fact that the grader never accepted it. No ticket has hit either result yet, so this is a gap and not a defect. Adding a member changes a published shape; the operator decides whether it is worth it. |
+| A-9 | § Runtime configuration pins `version: "1"`; custom skill versions are epoch strings | ✅ **ACCEPTED 2026-08-06, APPLIED.** Text-only. Already correct in code. Phase 5 minted `1785915306195089`, which is the third such value; `"1"` is not a value the API returns. |
+| A-10 | § Decision capture rests on an unsourced "one to three second Files API indexing lag" | ✅ **ACCEPTED 2026-08-06, APPLIED.** The clause is dropped and replaced by the synchronous-rejection reason the custom tool earned in Phase 4. Drop the clause. Replace it, if anything, with the reason the custom tool earned in Phase 4: it returns the decision to the host synchronously, so a malformed payload can be rejected and corrected, which a file cannot do. The other two stated reasons stand unaided. |
+| A-11 | § Memory's mount path is wrong and the failure is silent | ✅ **ACCEPTED 2026-08-06, APPLIED.** The one whose cost is silent data loss. The only one whose cost is data loss with no error signal. |
+| A-12 | § Verification assertion 4's citation clause is satisfied with no memory attached | ✅ **ACCEPTED 2026-08-06, APPLIED.** Replaced by the three proofs that ran. A second reason surfaced in Phase 7: the clause is not merely undiscriminating, it is **literally unmet by both the Phase 5 and Phase 6 artifacts** — T-010 escalates, so `citations` is correctly `[]` and the memory-exclusive token sits in `escalation_reason`. `docs/EVIDENCE.md` could not have cited SPEC's old wording without contradicting the evidence beside it. Measured against the committed Phase 4 baseline. |
+| A-13 | § Cost controls #1 now points at `list_cost`, whose units moved | ✅ **ACCEPTED 2026-08-06, APPLIED.** Most urgent of the twelve: with the workspace cap gone, SPEC was still instructing the next session to budget on a field that moved dollars→cents mid-beta. Keep `session.usage` authoritative for tokens; stop treating `list_cost` as a dollar figure. |
+| A-14 | § The guardrail split's three `system` rules do not cover memory content | ❌ **DECLINED 2026-08-06 for the agent version; the reasoning is APPLIED to `SPEC.md`.** The Phase 5 mitigation is in `instructions`, which reaches the system prompt on every session this driver creates. Widening rule 1 is more durable and costs an agent version. |
+| A-15 | § Verification assertion 5 asks for a grader token sum that cannot exist | ✅ **ACCEPTED 2026-08-06, APPLIED.** Confirmed in code while wiring the ship gate: `run.ts` passes an all-zero grader tally and `cost.ts` derives the share from `session.usage` with the method named. Summing as SPEC directed would have printed a permanent `0` inside the gate. The clause *"Total grader token usage summed from the end events and printed"* is unobtainable: `span.outcome_evaluation_end.usage` is zero-filled on every evaluation this build has ever seen — three in Phase 4, and every one in Phase 6. `cost.ts` prints the honest warning instead and derives the grader share from `session.usage`. A-1 amended § Cost controls to match in Phase 4; assertion 5 was simply missed. Same ruling, applied one section later. |
+| A-16 | § The SSE consumer says `_start` and `_ongoing` carry fields they do not | ✅ **ACCEPTED 2026-08-06, APPLIED.** Text-only. SPEC asks for grader progress *"from `span.outcome_evaluation_start`, `_ongoing`, and `_end`, including `result`, `explanation`, `iteration`, and the `usage` block"*. Only `_end` carries `result`, `explanation` or `usage`; `_start` and `_ongoing` carry `{id, iteration, outcome_id, processed_at, type}` and nothing else (`events.d.ts:1017-1059`). `src/events.ts` is already correct; only the sentence is loose. |
+| A-17 | § Verification says "Two fixtures"; there are five | ✅ **ACCEPTED 2026-08-06, APPLIED.** Text-only. Phase 5 added `memory-events.jsonl` (synthetic) and `memory-handoff-real.jsonl` (real, D-048); Phase 6 adds `grader-revision-real.jsonl` (real, D-055). The real/synthetic separation rule the sentence exists to state is intact and worth keeping; only the count is stale. |
+| A-18 | `TicketOutcome` has no member for a ticket the grader could not satisfy | ✅ **ACCEPTED 2026-08-06, IMPLEMENTED.** `escalated_by_iteration_cap` added — the missing third sibling of `escalated_by_timeout` and `escalated_by_validation`. The one ruling of the fourteen that changed a published shape. See D-064. |
+| **A-19** | § Out of scope calls MCP tunnels and dreaming *"excluded by scope, not by availability"* — **RAISED IN PHASE 7** | ✅ **ACCEPTED 2026-08-06, APPLIED.** `overview.md:104`: *"Within the beta, MCP tunnels and dreaming are in a more limited **research preview**. Request access to enable them."* Both are excluded by scope **and** gated behind an access request this build never made, which is a stronger exclusion than the one SPEC claimed. The instruction not to state dreaming's beta header stands and is now positively confirmed: `dreaming-2026-04-21` appears in **zero** Anthropic pages. |
+| **A-20** | § Out of scope calls hosted multiagent *"Available and public beta"* — **RAISED IN PHASE 7** | ✅ **ACCEPTED 2026-08-06, APPLIED.** No per-feature availability label exists anywhere in the eighteen pages. A sweep for `public beta`, `generally available`, `GA`, `research preview`, `limited preview` and `request access` returns **exactly one hit in the entire snapshot** — `overview.md:104`, which is A-19's. The claim traces to `BLUEPRINT.md:92`, a July-2026 table, i.e. precisely the class of claim SPEC's header subordinates to the docs. Multiagent is documented (`agent-setup.md:25`, `reference.md:40-41`) and unlabelled. |
+| **A-21** | § Goal claims *"six of eight platform primitives"* and no eight exists — **RAISED IN PHASE 7** | ✅ **ACCEPTED 2026-08-06, APPLIED.** Anthropic publishes **four core concepts** (`overview.md:37-44`, verbatim again at `quickstart.md:13-20`), and "primitive" occurs once in eighteen pages (`vaults.md:7`, about vaults). `BLUEPRINT.md:84-96`'s own table lists **eleven** candidates and never reconciles them to eight; SPEC's own arithmetic elsewhere reaches seven (`:168` "sixth primitive gained", `:268` the custom tool "a real primitive"). The six are each individually sourceable — the denominator is what fails, so it is dropped. This is a headline claim and `/defend` answers from it. |
+| **A-22** | § MCP server's *"Anthropic-side **proxy** … the sandbox never held it"* — **RAISED IN PHASE 7** | ✅ **ACCEPTED 2026-08-06, APPLIED, restated precisely.** `proxy` returns **zero hits** across all eighteen pages. Worse, the never-seen guarantee is attached to the wrong credential type: `vaults.md:130` and `:715` — *"stored in the sandbox as an opaque placeholder … substituted at egress … The agent never sees the secret value"* — are about **`environment_variable`**, while this build uses **`static_bearer`**, for which `vaults.md:129` says only "injected automatically". The replacement is stronger and free: no auth field on the agent definition, values write-only and never returned (`vaults.md:132`), and **the agent has no `bash`, no `web_search` and no `web_fetch`** — verifiable from `agent/agent.yaml` today. Exfiltration is bounded by what the agent can *do*, not only by what it can *see*. | `types.ts:37-41` offers `decided`, `escalated_by_timeout`, `escalated_by_validation`, `errored`. A ticket ending `max_iterations_reached` or `failed` is currently recorded as `decided` if a valid submission was accepted, which is true but loses the fact that the grader never accepted it. No ticket has hit either result yet, so this is a gap and not a defect. Adding a member changes a published shape; the operator decides whether it is worth it. |
 
 ### A-1 · ✅ ACCEPTED 2026-08-04, APPLIED — § Cost controls #1 describes a method that under-reports
 

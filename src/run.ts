@@ -50,10 +50,18 @@
  *     --tickets T-006,T-008     subset to run          (default: all ten)
  *     --outcome T-006[,…]|all   deliver these by user.define_outcome + rubric
  *     --max-iterations N        grader cap             (default: 2)
- *     --budget N                dollars, hard stop     (default: 2.50)
+ *     --budget N                dollars, hard stop     (REQUIRED when graded)
  *     --agent-version N         override the pin       (default: .env.local)
- *     --label NAME              evidence file prefix   (default: phase-4)
+ *     --label NAME              evidence file prefix   (REQUIRED, no default)
  *     --reset-memory            delete /accounts/* before the run
+ *
+ * Two flags are required rather than defaulted, both because the default was
+ * actively dangerous. `--label` used to default to `phase-4` while the trace
+ * writer truncates before appending, so a bare `pnpm session` destroyed ten
+ * committed Phase 4 traces. `--budget` used to default to 2.50 while
+ * SPEC § Cost controls (amended 2026-08-05) requires it to be passed explicitly
+ * on every live run — the workspace hard limit that used to make overspend
+ * impossible is gone, and this projection stop is what replaced it.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -85,11 +93,15 @@ import {
   type ConsumerResult,
 } from "./events.js";
 import {
+  citesNotFound,
+  citesRefundWindow,
   inventedAccountFields,
+  mcpCallBeforeSubmit,
   memoryReads,
   memoryRecordViolations,
   unsupportedClaims,
   writesOutsideMount,
+  type CallOrder,
   type MemoryRead,
 } from "./assertions.js";
 import {
@@ -193,6 +205,8 @@ type TicketRun = {
   terminatedBy: ConsumerResult["terminatedBy"] | "errored";
   validationFailures: number;
   mcpCalls: string[];
+  /** SPEC's supporting assertion on T-007 is about ORDER; `mcpCalls` has no indices. */
+  lookupOrdersOrder: CallOrder;
   graderResults: {
     outcome_id: string;
     result: string;
@@ -513,13 +527,26 @@ async function runTicket(opts: {
     );
   }
 
+  // A-18, ruled 2026-08-06. SPEC § Bounded iteration: "A ticket that exhausts
+  // either bound escalates by definition." The wall clock had a member and the
+  // grader-pass cap did not, so a ticket the grader never accepted was recorded
+  // `decided` — which is true, and loses the only fact that matters about it.
+  //
+  // Read off the FINAL evaluation, because `max_iterations_reached` is terminal
+  // and `needs_revision` is not: a ticket that failed pass one and satisfied on
+  // pass two was accepted, and must not land here.
+  const finalEvaluation = (result?.outcomeEvaluations ?? []).at(-1);
+  const graderNeverAccepted = String(finalEvaluation?.result ?? "") === "max_iterations_reached";
+
   const outcome: TicketOutcome = errored
     ? "errored"
     : terminatedBy === "timeout"
       ? "escalated_by_timeout"
       : decided === null
         ? "escalated_by_validation"
-        : "decided";
+        : graderNeverAccepted
+          ? "escalated_by_iteration_cap"
+          : "decided";
 
   // ---- memory read-back: host-side, out of band, after the session is done --
   //
@@ -578,6 +605,14 @@ async function runTicket(opts: {
     mcpCalls: events
       .filter((e) => e.type === "agent.mcp_tool_use")
       .map((e) => (e as { name: string }).name),
+    // SPEC § Verification's supporting assertion on T-007 is about ORDER, and
+    // `mcpCalls` above is a list of names with no indices — it cannot answer it.
+    // Derived here, where the event array is in scope, and persisted below so a
+    // later check costs $0 against the committed artifact rather than a re-run
+    // (D-040). Computed for every ticket because the predicate is ticket-
+    // agnostic; only T-007's is gated, because only T-007's resolution turns on
+    // an order record.
+    lookupOrdersOrder: mcpCallBeforeSubmit(events, "lookup_orders"),
     // `outcome_id` and `usage` are kept rather than dropped. The usage block is
     // zero-filled (D-017) and committing the zeros is the evidence for that,
     // not noise: D-040 established that a committed artifact is what makes a
@@ -603,19 +638,34 @@ async function main(): Promise<void> {
       tickets: { type: "string" },
       outcome: { type: "string" },
       "max-iterations": { type: "string", default: "2" },
-      // 2.50 on measurement, not taste. The workspace's $5 hard limit was
-      // removed on 2026-08-05, so this projection stop is now the only thing
-      // bounding a run — and the old 1.50 was measurably too low: the Phase 6
+      // NO DEFAULT on a graded run — see the check below. The backstop for an
+      // ungraded run is 2.50, on measurement rather than taste: the Phase 6
       // ten-ticket graded run FINISHED at $1.2310 ceiling but its mid-run
-      // projection peaked at $1.7049, so 1.50 would have stopped a healthy run.
-      // Pass --budget explicitly on every live run regardless; a default is a
-      // backstop, not a decision.
-      budget: { type: "string", default: "2.50" },
+      // projection peaked at $1.7049, so the old 1.50 would have stopped a
+      // healthy run for no reason.
+      budget: { type: "string" },
       "agent-version": { type: "string" },
-      label: { type: "string", default: "phase-4" },
+      // NO DEFAULT. See the check below.
+      label: { type: "string" },
       "reset-memory": { type: "boolean", default: false },
     },
   });
+
+  // `--label` used to default to "phase-4", and `runTicket` truncates each trace
+  // file before appending to it. So a bare `pnpm session` — the shortest command
+  // in the repo — silently destroyed ten committed Phase 4 traces and
+  // `phase-4-decisions.json`. Nothing in the write path guards a collision, and
+  // committed evidence is the one thing this build cannot regenerate cheaply.
+  // The flag is required and the operator names the run.
+  const label = values.label?.trim();
+  if (!label) {
+    throw new Error(
+      "--label is required and has no default. It names the evidence files this " +
+        "run writes (docs/evidence/<label>-*.jsonl), and those files are " +
+        "OVERWRITTEN without warning. Use a label no committed phase already " +
+        "owns, e.g. --label phase-7.",
+    );
+  }
 
   const wantsGrading = (values.outcome ?? "") !== "";
   const ids = requireIds([
@@ -631,7 +681,27 @@ async function main(): Promise<void> {
   const agentVersion = values["agent-version"]
     ? Number(values["agent-version"])
     : ids.AGENT_VERSION;
-  const budget = Number(values.budget);
+  // SPEC § Cost controls, amended 2026-08-05: "`--budget` is now load-bearing
+  // and must be passed explicitly on every live run, not left to its default."
+  // Until Phase 7 that was a sentence in a document. The workspace's $5 hard
+  // limit used to make overspend structurally impossible — requests were refused
+  // at the cap — and with it gone this projection stop and the per-ticket wall
+  // clock are the only protection left. A sentence is not protection, so the
+  // graded path refuses to start without the flag.
+  if (wantsGrading && values.budget === undefined) {
+    throw new Error(
+      "--budget is required on a graded run. SPEC § Cost controls (amended " +
+        "2026-08-05): the workspace hard limit was removed, so the projection " +
+        "stop is the only bound left and its default is a backstop, not a " +
+        "decision. The Phase 6 ten-ticket graded run finished at $1.2310 " +
+        "ceiling with a mid-run projection peak of $1.7049 — pass e.g. " +
+        "--budget 2.50 deliberately.",
+    );
+  }
+  const budget = Number(values.budget ?? "2.50");
+  if (!Number.isFinite(budget) || budget <= 0) {
+    throw new Error(`--budget must be a positive number, got ${JSON.stringify(values.budget)}`);
+  }
   const maxIterations = Number(values["max-iterations"]);
 
   const all = Tickets.parse(
@@ -661,7 +731,7 @@ async function main(): Promise<void> {
   const evidenceDir = resolve(REPO_ROOT, "docs/evidence");
   mkdirSync(evidenceDir, { recursive: true });
 
-  console.log(`── ${values.label} · triage driver `.padEnd(64, "─"));
+  console.log(`── ${label} · triage driver `.padEnd(64, "─"));
   console.log(`  agent          ${ids.AGENT_ID} v${agentVersion} (pinned)`);
   console.log(`  memory store   ${ids.MEMORY_STORE_ID} (read_write, attached at creation)`);
   console.log(`  tickets        ${tickets.map((t) => t.ticket_id).join(", ")}`);
@@ -696,7 +766,7 @@ async function main(): Promise<void> {
 
   // Committed so the "before" state is an artifact, not a claim made afterwards.
   const beforeRun = await snapshotStore(client0, ids.MEMORY_STORE_ID);
-  const beforePath = resolve(evidenceDir, `${values.label}-memory-before.json`);
+  const beforePath = resolve(evidenceDir, `${label}-memory-before.json`);
   writeFileSync(
     beforePath,
     `${JSON.stringify(
@@ -728,7 +798,7 @@ async function main(): Promise<void> {
       withOutcome: graded.has(ticket.ticket_id),
       rubricFileId: ids.RUBRIC_FILE_ID,
       maxIterations,
-      tracePath: resolve(evidenceDir, `${values.label}-${ticket.ticket_id}.jsonl`),
+      tracePath: resolve(evidenceDir, `${label}-${ticket.ticket_id}.jsonl`),
     });
     runs.push(run);
     // The DERIVED figure, not `list_cost` — see the capture site and D-047.
@@ -774,7 +844,7 @@ async function main(): Promise<void> {
   }
 
   // ---- decisions, persisted so later phases assert without re-running -------
-  const decisionsPath = resolve(evidenceDir, `${values.label}-decisions.json`);
+  const decisionsPath = resolve(evidenceDir, `${label}-decisions.json`);
   writeFileSync(
     decisionsPath,
     `${JSON.stringify(
@@ -787,6 +857,7 @@ async function main(): Promise<void> {
             terminated_by: r.terminatedBy,
             validation_failures: r.validationFailures,
             mcp_calls: r.mcpCalls,
+            lookup_orders_order: r.lookupOrdersOrder,
             grader: r.graderResults,
             list_cost: r.listCost,
             decision: r.decision,
@@ -832,11 +903,52 @@ async function main(): Promise<void> {
     .flatMap((r) => unsupportedClaims(r.decision as TriageDecision).map((t) => `${r.ticket.ticket_id}:${t}`));
 
   const gates: [string, boolean, string][] = [];
+
+  // SPEC § Verification assertion 1, stated as SPEC states it: "Every ticket
+  // yields a ConsumerResult with `terminatedBy !== 'timeout'`, a non-null
+  // `decision`, and at least one `agent.mcp_tool_use` across the run."
+  //
+  // This used to read `every(r => r.outcome === "decided")`, which was a proxy
+  // and a stricter one than SPEC asks for. A-18 made the difference material: a
+  // ticket that exhausts the grader cap now records
+  // `escalated_by_iteration_cap`, and it still terminated cleanly and still
+  // produced a decision — so it satisfies assertion 1, and the proxy would have
+  // failed the ship gate for a condition SPEC does not impose. Phase 6 put three
+  // tickets in exactly that state.
+  const processed = runs.filter((r) => r.terminatedBy !== "timeout" && r.decision !== null);
   gates.push([
-    `all ${tickets.length} tickets processed`,
-    runs.length === tickets.length && runs.every((r) => r.outcome === "decided"),
-    `${runs.filter((r) => r.outcome === "decided").length}/${tickets.length} decided`,
+    `all ${tickets.length} tickets processed end to end`,
+    runs.length === tickets.length && processed.length === tickets.length,
+    `${processed.length}/${tickets.length} with a decision and no timeout`,
   ]);
+
+  // The clause of assertion 1 that was counted and never gated. Without it a run
+  // in which every MCP call silently failed — the exact failure mode
+  // SPEC § Runtime configuration warns about, where `allow_mcp_servers` unset
+  // makes MCP tools fail SILENTLY rather than erroring — passes every other gate
+  // while proving nothing about the MCP primitive at all.
+  const mcpTotal = runs.reduce((a, r) => a + r.mcpCalls.length, 0);
+  gates.push([
+    "at least one agent.mcp_tool_use across the run",
+    mcpTotal > 0,
+    `${mcpTotal} MCP tool call(s)`,
+  ]);
+
+  // Reported, not gated: the outcome breakdown, so a ticket the grader never
+  // accepted is visible rather than folded into a "10 processed" count. D-055's
+  // rule — silence reads as "all ten were fully scored".
+  const byOutcome = new Map<string, string[]>();
+  for (const r of runs) {
+    byOutcome.set(r.outcome, [...(byOutcome.get(r.outcome) ?? []), r.ticket.ticket_id]);
+  }
+  if (byOutcome.size > 1 || !byOutcome.has("decided")) {
+    gates.push([
+      "(reported) outcome breakdown",
+      true,
+      [...byOutcome].map(([o, ids]) => `${o}=${ids.join("/")}`).join("  "),
+    ]);
+  }
+
   if (ran("T-006")) {
     gates.push([
       "T-006 escalates rather than auto-resolving",
@@ -852,12 +964,64 @@ async function main(): Promise<void> {
     ]);
   }
   if (ran("T-009")) {
+    // Both halves of SPEC's supporting assertion, which needs both to mean
+    // anything. `invented.length === 0` is the negative half and is satisfied by
+    // a decision that cited nothing at all; `citesNotFound` is the positive half
+    // that distinguishes escalating ON the evidence from escalating without
+    // looking. D-037 pinned `lookup_account.found` in SKILL.md so this has a
+    // stable shape to match.
+    const t009Cites = t009 ? citesNotFound(t009) : false;
     gates.push([
-      "T-009 escalates with a null draft and no invented account fields",
-      t009?.disposition === "escalate" && t009?.draft_reply === null && invented.length === 0,
-      invented.length > 0 ? `invented: ${invented.join(", ")}` : (t009?.disposition ?? "(none)"),
+      "T-009 escalates, null draft, cites the not-found record, invents nothing",
+      t009?.disposition === "escalate" &&
+        t009?.draft_reply === null &&
+        invented.length === 0 &&
+        t009Cites,
+      invented.length > 0
+        ? `invented: ${invented.join(", ")}`
+        : `${t009?.disposition ?? "(none)"}, cites lookup_account.found=${t009Cites}`,
     ]);
   }
+
+  // ---- Phase 7 · the supporting assertions SPEC lists and nothing implemented -
+  //
+  // SPEC § Verification's three "supporting assertions on the design-intent
+  // tickets". They were never gated: Phase 4's ledger row asked only that ten
+  // tickets process and three named ones behave, and the ship gate is this
+  // phase. Each is checkable against the committed Phase 6 artifacts for $0, and
+  // each is proven in tests/assertions.test.ts before this ever runs live.
+  if (ran("T-005")) {
+    const t005 = by("T-005");
+    const cites = t005 ? citesRefundWindow(t005) : false;
+    gates.push([
+      "T-005 declines, citing the refund window record",
+      t005?.disposition === "decline" && cites,
+      `${t005?.disposition ?? "(none)"}, cites refund window=${cites}`,
+    ]);
+  }
+
+  if (ran("T-007")) {
+    const order = runs.find((r) => r.ticket.ticket_id === "T-007")?.lookupOrdersOrder;
+    gates.push([
+      "T-007 called lookup_orders before submitting",
+      order?.orderedBefore === true,
+      order === undefined
+        ? "(no trace)"
+        : `lookup_orders@${order.toolIndex ?? "none"} submit@${order.submitIndex ?? "none"}`,
+    ]);
+  }
+
+  // SPEC § Verification assertion 3, SECOND CLAUSE, promoted from reported to
+  // gated — this is the promotion Phase 4 deferred here by name. Run-wide rather
+  // than per-ticket, because SPEC says "no ticket in the run". D-040 is why it
+  // can be trusted to gate: the first implementation matched substrings and
+  // reported a correctly-cited "$149.00" against a citation reading "149", and a
+  // checker that fires on correct work must never be a gate.
+  gates.push([
+    "no draft_reply promises a figure it did not cite",
+    unsupported.length === 0,
+    unsupported.length > 0 ? unsupported.join(", ") : "clean",
+  ]);
 
   // ---- Phase 6 · grader gates ----------------------------------------------
   //
@@ -1081,7 +1245,7 @@ async function main(): Promise<void> {
     // second clause proves not in any tool result either.
     const decisionText = JSON.stringify(reader.decision ?? {});
     const mcpText = readEventsJsonl(
-      resolve(evidenceDir, `${values.label}-${reader.ticket.ticket_id}.jsonl`),
+      resolve(evidenceDir, `${label}-${reader.ticket.ticket_id}.jsonl`),
     )
       .filter((e) => (e as { type?: string }).type === "agent.mcp_tool_result")
       .map((e) => JSON.stringify(e))
@@ -1141,7 +1305,7 @@ async function main(): Promise<void> {
     ]);
   }
 
-  console.log(`\n── ${values.label} gates `.padEnd(64, "─"));
+  console.log(`\n── ${label} gates `.padEnd(64, "─"));
   for (const [label, pass, detail] of gates) {
     console.log(`  ${pass ? "✓" : "✗"} ${label.padEnd(52)}${detail}`);
   }
@@ -1175,17 +1339,15 @@ async function main(): Promise<void> {
     }
   }
 
-  // Reported, not gated. SPEC § Verification assertion 3's second clause is a
-  // SHIP-GATE condition, and the ship gate is Phase 7 — the Phase 4 ledger row
-  // asks only that ten tickets process and that the three named tickets behave.
-  // It is implemented and exercised now because it constrains SKILL.md's citation
-  // instructions, and a citation rule discovered at Phase 7 costs another
-  // ten-ticket run to fix. Failing Phase 4 on it would misreport a met criterion.
-  console.log(`\n── ship-gate groundwork (Phase 7, reported not gated) `.padEnd(64, "─"));
-  console.log(
-    `  ${unsupported.length === 0 ? "✓" : "!"} no draft_reply promises a figure it did not cite   ` +
-      `${unsupported.length > 0 ? unsupported.join(", ") : "clean"}`,
-  );
+  // The per-ticket detail behind the run-wide gate above. Phase 4 printed this
+  // block under "ship-gate groundwork (reported not gated)" because the ship
+  // gate was Phase 7 and failing Phase 4 on it would have misreported a met
+  // criterion. Phase 7 is here: it is a gate now, and what remains printed is
+  // the evidence for it rather than a substitute.
+  if (unsupported.length > 0) {
+    console.log(`\n── uncited figures in draft_reply `.padEnd(64, "─"));
+    for (const u of unsupported) console.log(`  ✗ ${u}`);
+  }
 
   // ---- cost ----------------------------------------------------------------
   const totalAgent = runs.reduce<Tally>(
@@ -1235,11 +1397,11 @@ async function main(): Promise<void> {
   }
 
   console.log(`\n  decisions written  ${decisionsPath}`);
-  console.log(`  traces written     ${evidenceDir}/${values.label}-T-0*.jsonl`);
+  console.log(`  traces written     ${evidenceDir}/${label}-T-0*.jsonl`);
   console.log(`  store before       ${beforePath}`);
 
   const passed = gates.every(([, p]) => p) && !stoppedForBudget && !stoppedForMemory;
-  const banner = values.label.toUpperCase();
+  const banner = label.toUpperCase();
   console.log(`\n  ${passed ? `${banner} GATES MET` : `${banner} GATES NOT MET`}`);
   if (!passed) process.exitCode = 1;
 }

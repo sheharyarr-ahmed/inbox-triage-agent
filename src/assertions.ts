@@ -100,6 +100,53 @@ export function inventedAccountFields(d: TriageDecision): string[] {
     .map((c) => c.reference);
 }
 
+/**
+ * SPEC § Verification, supporting assertion on T-009, POSITIVE half: "its
+ * citations reference the not-found record".
+ *
+ * `inventedAccountFields` above is the negative half — it proves the agent
+ * asserted nothing it could not have read. On its own that is satisfied by a
+ * decision citing nothing at all, so it cannot distinguish "escalated on the
+ * evidence" from "escalated without looking". This is the half that can.
+ *
+ * Anchored on `lookup_account.found` rather than on any mention of the account:
+ * D-037 records that `SKILL.md` pins exactly that reference for the not-found
+ * case, precisely so this assertion has a stable shape to match instead of
+ * whatever the first run happened to produce. The live T-009 decision cites
+ * `lookup_account.found` with value `"false"`.
+ *
+ * `$`-anchored on the segment, so `refund_window_status` and friends cannot
+ * match by accident — the D-040 discipline of not firing on correct work,
+ * applied in the direction that would otherwise pass incorrect work.
+ */
+export function citesNotFound(d: TriageDecision): boolean {
+  return d.citations.some(
+    (c) => c.source === "mcp_record" && /(?:^|\.)found$/.test(c.reference.trim()),
+  );
+}
+
+/** The Account fields that carry the refund window. T-005's decline rests on these. */
+export const REFUND_WINDOW_FIELDS = ["refund_window_status", "refund_window_ends"] as const;
+
+/**
+ * SPEC § Verification, supporting assertion on T-005:
+ * "`decisions['T-005'].disposition === 'decline'` with a citation whose
+ * `reference` names the refund window record."
+ *
+ * This is the assertion that makes `decline` a real third disposition rather
+ * than decoration. SPEC § Files: "Declining a refund because the record says the
+ * window closed (T-005) is an autonomous decision, not an escalation, and the
+ * rubric grades it as one." A `decline` that cites the order but not the window
+ * has declined for a reason it did not establish.
+ */
+export function citesRefundWindow(d: TriageDecision): boolean {
+  return d.citations.some(
+    (c) =>
+      c.source === "mcp_record" &&
+      REFUND_WINDOW_FIELDS.some((f) => c.reference.includes(f)),
+  );
+}
+
 // ───────────────────────────── Phase 5 · memory ─────────────────────────────
 
 /**
@@ -361,4 +408,60 @@ export function writesOutsideMount(events: readonly unknown[], mountPath: string
     if (path.startsWith("/mnt/memory/") && !path.startsWith(prefix)) out.push(path);
   }
   return [...new Set(out)];
+}
+
+export type CallOrder = {
+  /** Index of the first `agent.mcp_tool_use` for the named tool, or null. */
+  toolIndex: number | null;
+  /** Index of the first `agent.custom_tool_use`, or null. */
+  submitIndex: number | null;
+  /** Both present, and the tool call came first. */
+  orderedBefore: boolean;
+};
+
+/**
+ * SPEC § Verification, supporting assertion on T-007: "T-007's trace contains an
+ * `agent.mcp_tool_use` for `lookup_orders` ORDERED BEFORE its
+ * `submit_triage_decision`."
+ *
+ * The ordering is the whole assertion, and it is why this reads the trace rather
+ * than the decision. T-007's resolution turns on an order's `status`, so a
+ * decision that cites `lookup_orders.status` while having called the tool
+ * afterwards would be reciting a conclusion it reached first and looked up
+ * second. `run.ts` records `mcpCalls` as a list of NAMES with no indices, so
+ * that field cannot answer this question at all — the event array can.
+ *
+ * FIRST occurrence of each, deliberately. A graded ticket goes round the
+ * revision loop and submits several times (D-056), so "the last submit" drifts
+ * later on exactly the tickets that argued with the grader, and comparing
+ * against it would pass a trace where the first submission preceded every
+ * lookup. The first submission is the one that has to have been informed.
+ *
+ * Pure over `readonly unknown[]`, so it runs live over `ConsumerResult.events`
+ * and offline over a committed JSONL trace — the same property that lets
+ * `lastGradedSubmissionIndex` be proven for $0 against committed evidence.
+ */
+export function mcpCallBeforeSubmit(
+  events: readonly unknown[],
+  toolName: string,
+): CallOrder {
+  let toolIndex: number | null = null;
+  let submitIndex: number | null = null;
+
+  for (const [index, e] of events.entries()) {
+    const o = rec(e);
+    if (!o) continue;
+    if (toolIndex === null && o["type"] === "agent.mcp_tool_use" && str(o["name"]) === toolName) {
+      toolIndex = index;
+    }
+    if (submitIndex === null && o["type"] === "agent.custom_tool_use") {
+      submitIndex = index;
+    }
+  }
+
+  return {
+    toolIndex,
+    submitIndex,
+    orderedBefore: toolIndex !== null && submitIndex !== null && toolIndex < submitIndex,
+  };
 }
