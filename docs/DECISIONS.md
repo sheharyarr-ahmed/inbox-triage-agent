@@ -377,10 +377,33 @@ The workspace segment cannot be `default` — the session response does not carr
 a workspace field, and a `default` link to a session in another workspace lands
 on "Session not found".
 
-**Open for Phase 8:** `events-and-streaming.md:2727` states tracing views are
-*"only accessible to Developers and Admins."* If the key's workspace role is
-lower, ship-gate condition 6's Console screenshots are unobtainable. Confirm
-before Phase 8, not during it.
+**RESOLVED 2026-08-05, confirmed by the operator.** The account's platform role
+is **Admin**, which satisfies `events-and-streaming.md:2727` — tracing views are
+*"only accessible to Developers and Admins."* Ship-gate condition 6's Console
+screenshots are obtainable, so the evidence half of the ship gate is unblocked
+and Phase 8 does not have to discover this while trying to close.
+
+Two limits on how far that confirmation reaches, stated so Phase 8 does not lean
+harder on it than it holds:
+
+1. **It is an operator statement, not a measurement.** A workspace-scoped API key
+   cannot report the roles of the humans on the workspace — the Admin API needs a
+   separate admin key, and `/v1/organizations/…` returns
+   `authentication_error: invalid x-api-key` for this one, tested. The measurement
+   that would settle it is one click: open a committed trace URL and see whether
+   the page renders. Recommended before Phase 8 rather than during it, which is
+   the same reasoning that opened this thread.
+2. **Org role and workspace role are separate in the Console.** Admin at the
+   organization level normally reaches every workspace, but the claim this entry
+   needs is specifically about `wrkspc_01LuDSz1dfWPHtWuytSwaLxn`. The click above
+   tests exactly that and nothing else.
+
+The URL to click is the one this file already tells you how to build, applied to
+the Phase 5 handoff session — the trace that carries ship-gate condition 4:
+
+```
+https://platform.claude.com/workspaces/wrkspc_01LuDSz1dfWPHtWuytSwaLxn/sessions/sesn_01MsMEFNwT6upYjN37g6RgFn
+```
 
 ### D-020 · `pnpm provision` and `pnpm session`, not `deploy` and `run`
 
