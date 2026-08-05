@@ -493,7 +493,7 @@ Supporting assertions on the design-intent tickets:
 - ~~Set the Console spend alert to $5.~~ **Done, and stronger than planned.** A dedicated workspace carries a **$5 hard spend limit**, not an alert. Requests are blocked at the cap rather than merely reported. Because API keys are permanently bound to the workspace they are created in, the project key cannot spend beyond $5 and cannot drain the rest of the balance.
 - ~~`ANTHROPIC_WORKSPACE_ID`.~~ **Done.** `wrkspc_01LuDSz1dfWPHtWuytSwaLxn`.
 - ~~Pull Overview, Quickstart, Sessions, Events and Streaming, Define Outcomes, Memory, Vaults, MCP Connector, and Skills into `docs/reference/`.~~ **Done 2026-08-02.** Twelve pages pulled from `platform.claude.com` (`docs.claude.com` 301-redirects there; the path prefix is `/docs/en/…`). The three beyond this list — `agent-setup`, `tools`, `environments` — are the surfaces Phase 2 writes `agent.yaml` and `environment.yaml` against. Provenance, MDX caveat, and the SPEC contradiction are recorded in `docs/reference/README.md`. **Phase 0 is closed.**
-- Revoke the superseded API key from the old workspace if not already done.
+- ~~Revoke the superseded API key from the old workspace if not already done.~~ **Done, confirmed by the operator 2026-08-05.** The superseded key is revoked; the build runs on the workspace-scoped key in `.env.local`, re-verified the same day against all three endpoint families it has to reach — `GET /v1/models` **200**, `GET /v1/environments` with `managed-agents-2026-04-01` **200**, `GET /v1/memory_stores` with `agent-memory-2026-07-22` **200** — and it resolves this build's own agent at version 5. **No item in this section remains open.**
 
 ---
 
