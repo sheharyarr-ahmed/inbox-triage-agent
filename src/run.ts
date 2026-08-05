@@ -108,6 +108,7 @@ import {
   mcpCallBeforeSubmit,
   memoryReads,
   memoryRecordViolations,
+  memoryViolations,
   unsupportedClaims,
   writesOutsideMount,
   type CallOrder,
@@ -204,6 +205,8 @@ type MemoryReport = {
   wrote: { path: string; operation: string; sha: string; content: string }[];
   /** Tripwire hits on anything this session changed. Empty is a pass. */
   violations: string[];
+  /** The subset that halts the run: shaped like an injection, not merely long. */
+  integrityBreaches: string[];
 };
 
 type TicketRun = {
@@ -585,6 +588,14 @@ async function runTicket(opts: {
         (why) => `${p}: ${why}`,
       ),
     ),
+    // The subset that stops the run. A well-formed record that merely broke a
+    // stated limit fails the gate without halting; only a record shaped like an
+    // injection is worth abandoning eight remaining tickets over. See D-067.
+    integrityBreaches: changed.flatMap((p) =>
+      memoryViolations(p, after.get(p)?.content ?? "", { injectionTickets })
+        .filter((x) => x.kind === "integrity")
+        .map((x) => `${p}: ${x.message}`),
+    ),
   };
 
   const readSummary =
@@ -897,7 +908,13 @@ async function main(): Promise<void> {
     // session N+1 is created. Stopping is the point: memory.md:369's threat is
     // that a later session reads the write as trusted context, and there is no
     // later session if the driver does not open one.
-    if (run.memory.violations.length > 0 || run.memory.writesOutsideMount.length > 0) {
+    //
+    // Only INTEGRITY breaches stop it. A format deviation — a well-formed,
+    // third-person, non-imperative record whose context ran past 200 characters
+    // — poses none of that threat, and halting on one cost a ship-gate run at
+    // ticket six of ten to discover a single long sentence. It still fails the
+    // gate below; it no longer abandons the four tickets after it. See D-067.
+    if (run.memory.integrityBreaches.length > 0 || run.memory.writesOutsideMount.length > 0) {
       console.error(
         `\n  !! memory integrity failed on ${ticket.ticket_id}. Stopping before the next ` +
           `session so nothing reads it back.\n     Inspect the store, then re-run with --reset-memory.`,

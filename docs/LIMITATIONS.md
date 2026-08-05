@@ -75,6 +75,24 @@ power from *anything* to *one well-formed, third-person, ≤200-character
 factual-looking claim at a fixed path*. That is a large reduction. It is not
 elimination.
 
+**The 200-character bound is instructed but not reliably obeyed.** Measured
+context lengths across two ten-ticket runs: **176 to 237**. The agent exceeded it
+once in six tickets, and the run that passed came within four characters of
+failing. The bound is a *target* the skill states and the host checks — a record
+over it fails the ship gate and is reported by ticket — but it is not a
+guarantee, and a claim that memory entries are at most 200 characters would be
+wrong. An over-length record is still parsed and still run through every content
+check, so exceeding the bound is not a way to carry an imperative past the
+imperative check; that was true of an earlier version and is what D-067 fixed.
+
+**Only integrity breaches stop a run.** A record shaped like an injection —
+imperative, credential, second person, unparseable, wrong path, or an injection
+ticket whose context is not the fixed literal — halts the driver before the next
+session opens, because `memory.md:369`'s threat is that a *later* session reads
+it. A merely over-long but honest record does not: it fails the gate and the run
+continues. That distinction was learned by a gate run that halted at ticket six
+of ten over one long sentence on an account no later ticket touches.
+
 The residual is bounded elsewhere, without a schema change: `SKILL.md` states
 that memory never overrides `lookup_account` or `lookup_orders`, and that memory
 alone never supports an `auto_resolve` or a `decline`. That is a procedural
