@@ -3,18 +3,20 @@
  * "what the CLI path does not cover", each guarded by an existence check so
  * re-running is safe.
  *
- * Three run; one is written and skips with a logged reason because its input
- * does not exist yet:
+ * All four run:
  *
  *   1. custom skill                      RUNS   — Phase 4, needs agent/skills/triage/SKILL.md
  *   2. vault + static_bearer credential  RUNS   — needs MCP_SERVER_TOKEN
  *   3. memory store                      RUNS   — needs a description string
- *   4. rubric file upload                skips  — needs agent/rubric.md (Phase 6)
+ *   4. rubric file upload                RUNS   — Phase 6, needs agent/rubric.md
  *
  * The control plane (agent, environment) is NOT here — it is committed YAML
  * applied by scripts/apply-control-plane.sh through the `ant` CLI.
  *
- *   usage:  pnpm provision
+ *   usage:  pnpm provision [--new-skill-version] [--new-rubric]
+ *
+ * NO `--` SEPARATOR, for the reason docs/DECISIONS.md D-049 records against
+ * `pnpm session`: parseArgs treats it as end-of-options.
  */
 
 import Anthropic, { toFile, type Uploadable } from "@anthropic-ai/sdk";
@@ -24,10 +26,17 @@ import { parseArgs } from "node:util";
 import { ENV_PATH, REPO_ROOT, env } from "./config.js";
 import { upsertEnvFile } from "./env-file.js";
 
-/** Skills are immutable; an edited SKILL.md needs a new version, explicitly. */
-const newSkillVersion = parseArgs({
-  options: { "new-skill-version": { type: "boolean", default: false } },
-}).values["new-skill-version"];
+/**
+ * Skills are immutable; an edited SKILL.md needs a new version, explicitly. An
+ * uploaded rubric file is immutable for the same reason and re-uploading mints a
+ * new `file_id`, so it gets the same treatment: explicit, never automatic.
+ */
+const { "new-skill-version": newSkillVersion, "new-rubric": newRubric } = parseArgs({
+  options: {
+    "new-skill-version": { type: "boolean", default: false },
+    "new-rubric": { type: "boolean", default: false },
+  },
+}).values;
 
 const SKILL_DIR = resolve(REPO_ROOT, "agent/skills/triage");
 const SKILL_MD = resolve(SKILL_DIR, "SKILL.md");
@@ -230,19 +239,47 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
   // 4. Rubric file — Phase 6.
   // -------------------------------------------------------------------------
-  if (env.RUBRIC_FILE_ID) {
-    ok(`rubric file  ${env.RUBRIC_FILE_ID} (already provisioned)`);
-  } else if (!existsSync(RUBRIC_MD)) {
+  if (!existsSync(RUBRIC_MD)) {
     skip(
       "rubric file",
-      `agent/rubric.md does not exist yet. Phase 6 writes the five criteria and ` +
-        `uploads once through the Files API so all ten sessions grade against a ` +
-        `byte-identical document.`,
+      `agent/rubric.md does not exist. It is a committed artifact — restore it ` +
+        `before provisioning, or graded runs have nothing to grade against.`,
     );
+  } else if (env.RUBRIC_FILE_ID && !newRubric) {
+    // SPEC § Provisioning split, step 4: "so all ten sessions grade against a
+    // byte-identical document". That claim is only true if the uploaded bytes
+    // still ARE the repo's bytes, and nothing else would ever notice that they
+    // are not. Files are immutable and there is no update endpoint, so an edit
+    // to agent/rubric.md leaves this id pointing at the previous document while
+    // provision cheerfully reports "already provisioned" — the same shape as
+    // D-033's skill immutability, one layer down, and silent in exactly the way
+    // D-041's mount path was.
+    //
+    // `size_bytes` is the check because it is on the metadata response and costs
+    // one read. Its known gap: an edit that preserves the byte length passes.
+    // The remedy for a deliberate change is `--new-rubric`, so this guard only
+    // has to catch the accidental case.
+    const remote = await client.beta.files.retrieveMetadata(env.RUBRIC_FILE_ID);
+    const localBytes = readFileSync(RUBRIC_MD).byteLength;
+    if (remote.size_bytes !== localBytes) {
+      throw new Error(
+        `agent/rubric.md has changed since it was uploaded — ` +
+          `local ${localBytes} bytes, ${env.RUBRIC_FILE_ID} holds ${remote.size_bytes}. ` +
+          `Files are immutable, so every graded session is still grading against ` +
+          `the OLD document. Re-run with --new-rubric to upload the current one.`,
+      );
+    }
+    ok(`rubric file  ${env.RUBRIC_FILE_ID} (already provisioned, ${localBytes} bytes, matches)`);
   } else {
-    throw new Error(
-      `${RUBRIC_MD} exists but rubric upload is not implemented yet (Phase 6).`,
-    );
+    // A fresh upload, never an update. The previous file is deliberately NOT
+    // deleted: committed traces in docs/evidence/ carry the old `file_id` on
+    // their `user.define_outcome` events, and deleting it would make those
+    // artifacts unresolvable.
+    const file = await client.beta.files.upload({
+      file: await toFile(readFileSync(RUBRIC_MD), "rubric.md", { type: "text/markdown" }),
+    });
+    record("RUBRIC_FILE_ID", file.id);
+    ok(`rubric file  ${file.id} (${file.size_bytes} bytes${newRubric ? ", --new-rubric" : ""})`);
   }
 
   // -------------------------------------------------------------------------

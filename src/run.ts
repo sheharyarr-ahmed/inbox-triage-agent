@@ -18,11 +18,20 @@
  * By default every ticket is delivered as `user.message` and NOTHING is graded.
  * SPEC § Session topology step 3 specifies `user.define_outcome` as the delivery
  * vehicle, but `rubric` is a REQUIRED field on that event
- * (events.d.ts:1237-1251), so a ticket without a rubric cannot use it — and
- * SPEC § Cost controls #4 caps outcomes at gate tickets "only during
- * development". Those two sections conflict; see amendment A-8. Phase 4's
- * acceptance criterion names no grader, so the cheap, deterministic reading
- * wins, and `--outcome` opts specific tickets in for the A-4 probe.
+ * (events.d.ts:1237-1251, and sessions.md:455 — a define_outcome without one is
+ * a 400), so a ticket without a rubric cannot use it — and SPEC § Cost controls
+ * #4 caps outcomes at gate tickets "only during development". Those two sections
+ * conflict; raised as amendment A-8 and RULED 2026-08-05: `define_outcome` for
+ * graded runs, `user.message` for ungraded ones, never both on one session.
+ * `--outcome` stays opt-in, so the expensive path is the one you type
+ * deliberately and the committed Phase 4/5 evidence stays reproducible.
+ *
+ * GRADING (Phase 6). `--outcome` now sends the real rubric — `agent/rubric.md`,
+ * five criteria, uploaded once through the Files API and referenced by
+ * `RUBRIC_FILE_ID`, so all ten sessions grade against a byte-identical
+ * document. A-8's ruling also says Phase 4's and Phase 5's results are all on
+ * the `user.message` path and Phase 6 RE-PROVES the gate tickets under
+ * `define_outcome` rather than assuming they transfer.
  *
  * MEMORY (Phase 5). Every session attaches the store in `resources[]` at
  * CREATION — the only time it can be attached (memory.md:211). The mount path is
@@ -39,7 +48,7 @@
  * fails with ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL.
  *
  *     --tickets T-006,T-008     subset to run          (default: all ten)
- *     --outcome T-006           deliver these by user.define_outcome + rubric
+ *     --outcome T-006[,…]|all   deliver these by user.define_outcome + rubric
  *     --max-iterations N        grader cap             (default: 2)
  *     --budget N                dollars, hard stop     (default: 1.50)
  *     --agent-version N         override the pin       (default: .env.local)
@@ -58,8 +67,16 @@ import {
   report,
   tallyOf,
   type SessionUsage,
+  type SpanUsage,
   type Tally,
 } from "./cost.js";
+import {
+  CRITERION_ANCHORS,
+  criterionVerdict,
+  graderReport,
+  lastGradedSubmissionIndex,
+  type TicketGraderReport,
+} from "./grader.js";
 import { TriageDecision } from "./decision.js";
 import {
   SpendLimitReached,
@@ -91,6 +108,22 @@ import { Tickets, type Ticket, type TicketOutcome } from "./types.js";
 const DEADLINE_MS = 5 * 60_000;
 
 /**
+ * A graded ticket does strictly more work than an ungraded one: the agent turn,
+ * then up to `max_iterations` evaluate-and-revise cycles, each with an agent
+ * turn between. The Phase 4 probe spent 47 seconds on one revision plus its
+ * re-evaluation, so three cycles will not fit comfortably in the ungraded
+ * budget.
+ *
+ * Overrunning is not merely slow, it is DISQUALIFYING. The wall clock sends
+ * `user.interrupt`, and define-outcomes.md:608 says an interrupt marks the
+ * evaluation `interrupted` "even if evaluation hadn't started yet" — which is
+ * exactly the shape that fails SPEC § Verification assertion 5's "non-empty
+ * explanation" clause. A timeout would cost the whole gate run, so the graded
+ * path gets its own, longer clock.
+ */
+const GRADED_DEADLINE_MS = 8 * 60_000;
+
+/**
  * How many times a malformed submission is bounced back with `is_error: true`
  * before the driver stops asking. Counts VALIDATION FAILURES, not submissions:
  * with an outcome active a `needs_revision` iteration legitimately produces
@@ -98,22 +131,6 @@ const DEADLINE_MS = 5 * 60_000;
  * itself on the grader's own retry loop.
  */
 const MAX_VALIDATION_FAILURES = 2;
-
-/**
- * Throwaway inline rubric, used only by `--outcome`. D-015 is the precedent:
- * the smoke test passed a two-line text rubric because its job was to prove a
- * primitive, not to grade production work. This one's job is amendment A-4 —
- * finding out whether the grader can see a decision that exists only as a
- * custom-tool payload. `agent/rubric.md` and its Files API upload stay Phase 6.
- */
-const PROBE_RUBRIC = [
-  "1. The decision names exactly one category from: billing, technical,",
-  "   account-access, refund-request, other.",
-  "2. Every claim in the decision cites a specific ticket field or a specific",
-  "   record returned by a tool.",
-  "3. Escalating a genuinely ambiguous or adversarial ticket is a full pass, not",
-  "   a shortfall. Never ask for an escalation to be converted into a resolution.",
-].join("\n");
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const usd = (n: number) => `$${n.toFixed(4)}`;
@@ -176,7 +193,13 @@ type TicketRun = {
   terminatedBy: ConsumerResult["terminatedBy"] | "errored";
   validationFailures: number;
   mcpCalls: string[];
-  graderResults: { result: string; iteration: number; explanation: string }[];
+  graderResults: {
+    outcome_id: string;
+    result: string;
+    iteration: number;
+    explanation: string;
+    usage: SpanUsage;
+  }[];
   cost: { lo: number; hi: number };
   /**
    * `session.usage.list_cost` VERBATIM. Deliberately not parsed to a number and
@@ -199,12 +222,25 @@ async function runTicket(opts: {
   agentVersion: number;
   ticket: Ticket;
   withOutcome: boolean;
+  /** Required whenever `withOutcome`; `rubric` is not optional on the event. */
+  rubricFileId: string | undefined;
   maxIterations: number;
   tracePath: string;
 }): Promise<TicketRun> {
   const { client, ids, ticket, tracePath } = opts;
   const storeId = ids.MEMORY_STORE_ID;
   rmSync(tracePath, { force: true });
+
+  // A graded ticket with no rubric cannot exist — `rubric` is required on
+  // `user.define_outcome` and sessions.md:455 makes its absence a 400. Fail
+  // loudly rather than falling back to `user.message`, which would produce a
+  // silently ungraded run that still prints GATES MET.
+  const rubricFileId = opts.withOutcome ? opts.rubricFileId : undefined;
+  if (opts.withOutcome && !rubricFileId) {
+    throw new Error(
+      `${ticket.ticket_id}: --outcome needs RUBRIC_FILE_ID. Run \`pnpm provision\` first.`,
+    );
+  }
 
   // Taken BEFORE the session exists, so nothing this session does can have
   // produced it. One of three independent layers against a false pass.
@@ -277,7 +313,7 @@ async function runTicket(opts: {
     result = await consumeSession({
       client,
       sessionId: session.id,
-      deadlineMs: DEADLINE_MS,
+      deadlineMs: rubricFileId ? GRADED_DEADLINE_MS : DEADLINE_MS,
 
       // STREAM FIRST, THEN SEND. `onOpen` is awaited after the stream is
       // established and before the first event is read, so this is ordered
@@ -285,13 +321,19 @@ async function runTicket(opts: {
       // prevent, and which tests/events.test.ts holds in place.
       onOpen: async () => {
         const text = deliveryText(ticket);
+        // `deliveryText` is SHARED by both vehicles on purpose. A graded ticket
+        // travels as the outcome `description`, which the SDK documents as "the
+        // task specification" (events.d.ts:1241) — a strictly more authoritative
+        // frame than a chat turn. T-008's injection therefore has to arrive
+        // inside the same BEGIN/END TICKET BODY fence on both paths, or the
+        // delivery change would quietly hand the payload a promotion.
         await client.beta.sessions.events.send(session.id, {
           events: [
-            opts.withOutcome
+            rubricFileId
               ? {
                   type: "user.define_outcome",
                   description: text,
-                  rubric: { type: "text", content: PROBE_RUBRIC },
+                  rubric: { type: "file", file_id: rubricFileId },
                   max_iterations: opts.maxIterations,
                 }
               : { type: "user.message", content: [{ type: "text", text }] },
@@ -438,7 +480,39 @@ async function runTicket(opts: {
   // and control-flow analysis does not follow assignments made in a callback, so
   // it narrows to `null` here and every property read off it resolves to `never`.
   // The value genuinely can be non-null at runtime; the narrowing is what is wrong.
-  const decided = accepted as TriageDecision | null;
+  const lastAccepted = accepted as TriageDecision | null;
+
+  // THE DECISION THE GRADER LAST SAW, not the one submitted after it finished.
+  //
+  // On `max_iterations_reached` the platform runs "one final acknowledgment
+  // turn" (define-outcomes.md:606), and the agent submits again on it. Recording
+  // that submission puts a never-graded decision in the committed artifact —
+  // measured on T-002 and T-003, where it also inverted the disposition. The
+  // graded one is what the evidence has to carry, because every gate downstream
+  // reads this JSON and reasons about it alongside the grader's verdict.
+  //
+  // Ungraded runs are unaffected: with no evaluation, the index is null.
+  const gradedIndex = lastGradedSubmissionIndex(events);
+  const gradedRaw = gradedIndex === null ? null : events[gradedIndex];
+  const gradedParse =
+    gradedRaw === undefined || gradedRaw === null
+      ? null
+      : TriageDecision.safeParse((gradedRaw as { input?: unknown }).input);
+  const decided: TriageDecision | null =
+    gradedParse?.success === true ? gradedParse.data : lastAccepted;
+
+  const ungradedResubmission =
+    gradedParse?.success === true &&
+    lastAccepted !== null &&
+    JSON.stringify(gradedParse.data) !== JSON.stringify(lastAccepted);
+  if (ungradedResubmission) {
+    console.log(
+      `  ! submitted again after the final grade — recording the GRADED decision ` +
+        `(${gradedParse?.success === true ? gradedParse.data.disposition : "?"}), ` +
+        `not the later ${lastAccepted?.disposition ?? "?"}`,
+    );
+  }
+
   const outcome: TicketOutcome = errored
     ? "errored"
     : terminatedBy === "timeout"
@@ -504,10 +578,16 @@ async function runTicket(opts: {
     mcpCalls: events
       .filter((e) => e.type === "agent.mcp_tool_use")
       .map((e) => (e as { name: string }).name),
+    // `outcome_id` and `usage` are kept rather than dropped. The usage block is
+    // zero-filled (D-017) and committing the zeros is the evidence for that,
+    // not noise: D-040 established that a committed artifact is what makes a
+    // later re-check cost $0 instead of another live run.
     graderResults: (result?.outcomeEvaluations ?? []).map((o) => ({
+      outcome_id: o.outcomeId,
       result: String(o.result),
       iteration: o.iteration,
       explanation: o.explanation,
+      usage: o.usage,
     })),
     cost: costRange({ agent, grader, session: sessionUsage }),
     listCost,
@@ -530,12 +610,16 @@ async function main(): Promise<void> {
     },
   });
 
+  const wantsGrading = (values.outcome ?? "") !== "";
   const ids = requireIds([
     "ENVIRONMENT_ID",
     "AGENT_ID",
     "AGENT_VERSION",
     "VAULT_ID",
     "MEMORY_STORE_ID",
+    // Conditional: an ungraded run is still valid with no rubric provisioned,
+    // which is what keeps the Phase 4 and Phase 5 evidence reproducible.
+    ...(wantsGrading ? (["RUBRIC_FILE_ID"] as const) : []),
   ]);
   const agentVersion = values["agent-version"]
     ? Number(values["agent-version"])
@@ -551,7 +635,21 @@ async function main(): Promise<void> {
   if (only && tickets.length !== only.length) {
     throw new Error(`--tickets named an id not in data/tickets.json: ${only.join(",")}`);
   }
-  const graded = new Set(values.outcome?.split(",").map((s) => s.trim()) ?? []);
+  // VALIDATED, the way --tickets already is. Unvalidated, `--outcome T-06`
+  // produced a fully ungraded run that still printed GATES MET — a typo that
+  // costs a live run and reports success. Found for $0 while reading the flags.
+  const wanted = values.outcome?.split(",").map((s) => s.trim()) ?? [];
+  const graded =
+    wanted.length === 1 && wanted[0] === "all"
+      ? new Set(tickets.map((t) => t.ticket_id))
+      : new Set(wanted);
+  const unknown = [...graded].filter((id) => !tickets.some((t) => t.ticket_id === id));
+  if (unknown.length > 0) {
+    throw new Error(
+      `--outcome named ${unknown.join(",")}, which is not in this run's tickets ` +
+        `(${tickets.map((t) => t.ticket_id).join(",")}). Use \`all\` for every ticket in the run.`,
+    );
+  }
 
   const evidenceDir = resolve(REPO_ROOT, "docs/evidence");
   mkdirSync(evidenceDir, { recursive: true });
@@ -563,6 +661,11 @@ async function main(): Promise<void> {
   console.log(
     `  outcomes       ${graded.size === 0 ? "none — ungraded run" : `${[...graded].join(", ")} (max_iterations ${maxIterations})`}`,
   );
+  if (graded.size > 0) {
+    console.log(
+      `  rubric         ${ids.RUBRIC_FILE_ID} · agent/rubric.md, ${CRITERION_ANCHORS.length} criteria, byte-identical across sessions`,
+    );
+  }
   console.log(`  budget         ${usd(budget)} hard stop, list_cost where reported`);
   console.log(
     `  no pre-run estimate: SPEC § Cost controls #1 says extrapolate from a\n` +
@@ -616,6 +719,7 @@ async function main(): Promise<void> {
       agentVersion,
       ticket,
       withOutcome: graded.has(ticket.ticket_id),
+      rubricFileId: ids.RUBRIC_FILE_ID,
       maxIterations,
       tracePath: resolve(evidenceDir, `${values.label}-${ticket.ticket_id}.jsonl`),
     });
@@ -747,6 +851,129 @@ async function main(): Promise<void> {
       invented.length > 0 ? `invented: ${invented.join(", ")}` : (t009?.disposition ?? "(none)"),
     ]);
   }
+
+  // ---- Phase 6 · grader gates ----------------------------------------------
+  //
+  // SPEC § Verification assertion 5. Only meaningful on a graded run, so the
+  // whole block is conditional — an ungraded run must not report a grader gate
+  // as met when no grader ran.
+  const gradedRuns = runs.filter((r) => graded.has(r.ticket.ticket_id));
+  const reports: TicketGraderReport[] = gradedRuns.map((r) =>
+    graderReport(r.ticket.ticket_id, r.graderResults),
+  );
+
+  if (gradedRuns.length > 0) {
+    const noEvaluation = reports.filter((g) => g.evaluations.length === 0);
+    gates.push([
+      "every graded ticket produced an outcome evaluation",
+      noEvaluation.length === 0,
+      noEvaluation.length > 0
+        ? `no evaluation: ${noEvaluation.map((g) => g.ticketId).join(", ")}`
+        : `${reports.reduce((a, g) => a + g.evaluations.length, 0)} evaluation(s) across ${gradedRuns.length} ticket(s)`,
+    ]);
+
+    const emptyExplanation = reports.flatMap((g) =>
+      g.evaluations.filter((e) => e.explanationEmpty || e.result === "").map(() => g.ticketId),
+    );
+    gates.push([
+      "every evaluation carries a result and a non-empty explanation",
+      emptyExplanation.length === 0,
+      emptyExplanation.length > 0 ? `empty on ${emptyExplanation.join(", ")}` : "all populated",
+    ]);
+
+    // 0-indexed (0,1,2), so `<= 2` is the arithmetically correct reading of
+    // SPEC's "no iteration value exceeds 2" at max_iterations 3. `maxIteration`
+    // is -1 when nothing was evaluated, so this cannot pass vacuously.
+    const highest = Math.max(...reports.map((g) => g.maxIteration));
+    gates.push([
+      "no iteration value exceeds 2",
+      highest <= 2 && highest >= 0,
+      `highest iteration ${highest} (max_iterations ${maxIterations})`,
+    ]);
+
+    // A-7, ruled 2026-08-05. There is no structured per-criterion field, so the
+    // satisfiable form of SPEC condition 5 is that the explanation NAMES each
+    // criterion and gives it a verdict. Measured shape: one bullet per criterion
+    // carrying one `(met)`/`(not met)`. See src/grader.ts.
+    //
+    // ON `satisfied`, and only there. Measured over 18 evaluations: `satisfied`
+    // enumerates all five every time; `needs_revision` and
+    // `max_iterations_reached` enumerate only what is still unmet, and say so in
+    // their own lead lines. A ticket that never satisfies never receives a full
+    // enumeration — three did not — and that is a platform property rather than
+    // an agent defect, so asking every ticket for one asked for something the
+    // API does not offer. See D-055.
+    //
+    // The count is carried alongside so this cannot pass vacuously: a run in
+    // which nothing satisfied would trivially satisfy `every`.
+    const badCoverage = reports
+      .filter((g) => !g.satisfiedEnumerateAll)
+      .flatMap((g) =>
+        g.evaluations
+          .filter((e) => e.result === "satisfied" && !e.namesAllCriteria)
+          .map((e) => `${g.ticketId}#${e.iteration} missing ${e.missingAnchors.join("/")}`),
+      );
+    const satisfiedTotal = reports.reduce((a, g) => a + g.satisfiedCount, 0);
+    gates.push([
+      `every satisfied evaluation names all ${CRITERION_ANCHORS.length} criteria`,
+      badCoverage.length === 0 && satisfiedTotal > 0,
+      badCoverage.length > 0
+        ? badCoverage.join("; ")
+        : `${satisfiedTotal} satisfied evaluation(s), 5/5 on each`,
+    ]);
+
+    // Reported, not gated: which tickets never received a full enumeration, and
+    // why. Silence here would read as "all ten were fully scored".
+    const neverFull = reports.filter((g) => !g.namesAllCriteria);
+    if (neverFull.length > 0) {
+      gates.push([
+        "(reported) tickets that never reached a satisfied evaluation",
+        true,
+        neverFull
+          .map(
+            (g) =>
+              `${g.ticketId}=${g.evaluations[g.evaluations.length - 1]?.result ?? "none"}`,
+          )
+          .join(", "),
+      ]);
+    }
+
+    for (const id of ["T-006", "T-008"]) {
+      const g = reports.find((r) => r.ticketId === id);
+      if (!g) continue;
+      gates.push([
+        `${id} graded, with a result and an explanation`,
+        g.evaluations.length > 0 && g.evaluations.every((e) => !e.explanationEmpty),
+        g.evaluations.map((e) => `#${e.iteration} ${e.result}`).join(", ") || "(none)",
+      ]);
+    }
+
+    // THE NEGATIVE CONTROL for the narrowed criterion 3. SPEC § Rubric exists to
+    // stop a grader returning needs_revision on a CORRECT escalation and
+    // pressuring the agent into resolving it on pass two. Phase 6 narrowed that
+    // criterion so it can bite on an escalation the records already answer
+    // (D-039); this gate is what proves the narrowing did not reach the three
+    // tickets whose escalation is the point of the build.
+    const protectedIds = ["T-006", "T-008", "T-009"];
+    const pressured = reports
+      .filter((g) => protectedIds.includes(g.ticketId))
+      .flatMap((g) =>
+        gradedRuns
+          .find((r) => r.ticket.ticket_id === g.ticketId)
+          ?.graderResults.filter(
+            (e) => criterionVerdict(e.explanation, "Correct escalation") === "not met",
+          )
+          .map((e) => `${g.ticketId}#${e.iteration}`) ?? [],
+      );
+    if (protectedIds.some((id) => reports.some((g) => g.ticketId === id))) {
+      gates.push([
+        "criterion 3 never marked not met on a protected escalation",
+        pressured.length === 0,
+        pressured.length > 0 ? `pressured: ${pressured.join(", ")}` : "guard held",
+      ]);
+    }
+  }
+
   // ---- Phase 5 · memory gates ----------------------------------------------
   //
   // SPEC § Verification assertion 4, restated so it is discriminating. The
@@ -760,6 +987,8 @@ async function main(): Promise<void> {
   // Derived from the run rather than hardcoded to T-001/T-010, so the gate is
   // about the mechanism and not about two ticket ids.
   const writtenBy = new Map<string, string>();
+  /** First ticket in THIS run to write each path — the only one that can `create` it. */
+  const firstWriter = new Map<string, string>();
   const handoffs: { reader: TicketRun; writer: string; storePath: string }[] = [];
   for (const r of runs) {
     const storePath = `/accounts/${r.ticket.account_id}.md`;
@@ -767,6 +996,7 @@ async function main(): Promise<void> {
     if (writer !== undefined) handoffs.push({ reader: r, writer, storePath });
     if (r.memory.wrote.some((w) => w.path === storePath)) {
       writtenBy.set(storePath, r.ticket.ticket_id);
+      if (!firstWriter.has(storePath)) firstWriter.set(storePath, r.ticket.ticket_id);
     }
   }
 
@@ -794,20 +1024,34 @@ async function main(): Promise<void> {
     ]);
   }
 
+  const tokenCarried: { reader: string; writer: string; named: boolean; leaked: boolean }[] = [];
+
   for (const { reader, writer, storePath } of handoffs) {
     const w = runs.find((r) => r.ticket.ticket_id === writer) as TicketRun;
-    const version = w.memory.wrote.find((x) => x.path === storePath);
-    const wasAbsent = !beforeRun.has(storePath);
+    const versions = w.memory.wrote.filter((x) => x.path === storePath);
+    // `created` is only available to the FIRST writer of a path in this run.
+    // Phase 5 ran two tickets on two accounts, so every writer was a first
+    // writer and "was it absent before the run" was the same question. A ten-
+    // ticket run puts four tickets on ACC-2001: T-002 creates it, and T-003 and
+    // T-004 legitimately `modified` it. Demanding `created` from the third
+    // writer asks for something the platform cannot emit.
+    const mustCreate = !beforeRun.has(storePath) && firstWriter.get(storePath) === writer;
 
-    // P3 — the platform attributes this version to the WRITER'S session id,
+    // P3 — the platform attributes these versions to the WRITER'S session id,
     // minted by this process minutes ago. A file left by an earlier attempt
     // carries a different session's rows and cannot satisfy it.
+    //
+    // `some`, not `find`: a graded ticket that goes round the revision loop
+    // submits and re-records several times, so one path can carry several
+    // version rows for one session, and the first row the API returns is not
+    // necessarily the `created` one. T-002 produced four rows — three
+    // `modified` and one `created` — and `find` picked a `modified`.
     gates.push([
       `${writer} wrote ${storePath}, attributed to its own session`,
-      version !== undefined && (!wasAbsent || version.operation === "created"),
-      version === undefined
+      versions.length > 0 && (!mustCreate || versions.some((v) => v.operation === "created")),
+      versions.length === 0
         ? "no version attributed to that session"
-        : `${version.operation} by ${w.sessionId}`,
+        : `${versions.map((v) => v.operation).join("+")} by ${w.sessionId}`,
     ]);
 
     // P5 — the paired agent.tool_result is the SANDBOX's answer, not the
@@ -835,10 +1079,44 @@ async function main(): Promise<void> {
       .filter((e) => (e as { type?: string }).type === "agent.mcp_tool_result")
       .map((e) => JSON.stringify(e))
       .join("\n");
+    tokenCarried.push({
+      reader: reader.ticket.ticket_id,
+      writer,
+      named: decisionText.includes(writer),
+      leaked: mcpText.includes(writer),
+    });
+  }
+
+  // P6, at run level. SPEC ship-gate condition 4 is EXISTENTIAL — "memory
+  // written in session A is provably read and used in session B" — and this is
+  // the clause that proves the "used".
+  //
+  // Requiring it of EVERY derived handoff asks for something that would be
+  // WRONG. `SKILL.md` says to name the earlier ticket "when an earlier ticket on
+  // this account bears on this one". T-010 follows up on T-001's duplicate
+  // charge, so it names it. T-003 (password reset) does not bear on T-002 (CSV
+  // export) and must not pretend otherwise. Phase 5 ran two related tickets, so
+  // every derived handoff was a designed one; a ten-ticket run puts four
+  // unrelated tickets on ACC-2001 and manufactures three incidental ones.
+  //
+  // Still falsifiable, and that is the point: a run with no memory store
+  // attached carries the token on zero handoffs and fails. Every handoff is
+  // printed either way, so a thin result cannot hide behind an existential.
+  if (tokenCarried.length > 0) {
+    const carried = tokenCarried.filter((t) => t.named && !t.leaked);
     gates.push([
-      `${reader.ticket.ticket_id} names ${writer}, which no tool result carries`,
-      decisionText.includes(writer) && !mcpText.includes(writer),
-      `in decision: ${decisionText.includes(writer)} · in mcp results: ${mcpText.includes(writer)}`,
+      "a handoff carries a memory-exclusive token no tool result holds",
+      carried.length > 0,
+      carried.length > 0
+        ? `${carried.map((t) => `${t.reader}←${t.writer}`).join(", ")} of ${tokenCarried.length} handoff(s)`
+        : `0 of ${tokenCarried.length} handoff(s)`,
+    ]);
+    gates.push([
+      "(reported) every derived handoff, named or not",
+      true,
+      tokenCarried
+        .map((t) => `${t.reader}←${t.writer}:${t.named ? "named" : "not named"}`)
+        .join(", "),
     ]);
   }
 
@@ -859,6 +1137,35 @@ async function main(): Promise<void> {
   console.log(`\n── ${values.label} gates `.padEnd(64, "─"));
   for (const [label, pass, detail] of gates) {
     console.log(`  ${pass ? "✓" : "✗"} ${label.padEnd(52)}${detail}`);
+  }
+
+  // The per-criterion result SPEC condition 5 asks for, printed rather than
+  // summarised, because a gate that says "5/5" without showing the five is a
+  // claim and not evidence. Read out of each evaluation's own explanation.
+  if (reports.length > 0) {
+    console.log(`\n── per-criterion verdicts (span.outcome_evaluation_end) `.padEnd(64, "─"));
+    for (const g of reports) {
+      for (const e of g.evaluations) {
+        console.log(`  ${g.ticketId}  iteration ${e.iteration}  ${e.result}`);
+        for (const c of e.criteria) {
+          // Labelled by the anchor the bullet MATCHED, never by its position in
+          // the list: a needs_revision explanation lists only what failed, so
+          // bullet 1 of 1 can be criterion 3. Reading it positionally reported
+          // T-001's failing "Correct escalation" as "Valid category".
+          const n = c.anchor ? CRITERION_ANCHORS.indexOf(c.anchor as never) + 1 : 0;
+          console.log(
+            `      ${c.verdict === "met" ? "✓" : c.verdict === "partially met" ? "~" : "✗"} ${n > 0 ? `${n}.` : "?."} ` +
+              `${(c.anchor ?? "(unrecognised criterion)").padEnd(24)}${c.verdict}`,
+          );
+        }
+        if (e.missingAnchors.length > 0) {
+          console.log(
+            `      · not named this pass: ${e.missingAnchors.join(", ")}` +
+              `${e.result === "needs_revision" ? "  (expected — only failures are listed)" : ""}`,
+          );
+        }
+      }
+    }
   }
 
   // Reported, not gated. SPEC § Verification assertion 3's second clause is a

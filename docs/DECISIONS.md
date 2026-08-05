@@ -1197,6 +1197,412 @@ session does not rediscover it against a live account.
 
 ---
 
+## Phase 6 — outcomes and the grader
+
+### D-050 · The rubric upload, and the immutability trap one layer below D-033
+
+`src/deploy.ts` step 4 had thrown since Phase 2 — *"`agent/rubric.md` exists but
+rubric upload is not implemented yet (Phase 6)"* — so creating the rubric and
+implementing its upload could not be separate changes. Two files, one commit,
+which is also why the Phase 6 diff opens with a file that breaks `pnpm provision`
+until the next hunk fixes it.
+
+The upload itself is four lines. `client.beta.files.upload` takes exactly two
+fields, `file` and an optional `betas` (`resources/beta/files.d.ts:158-167`), and
+the SDK appends `files-api-2025-04-14` unconditionally
+(`resources/beta/files.js:110-121`), so `define-outcomes.md:57-59`'s note that
+the managed-agents beta *also* grants Files access changes nothing here. `toFile`
+was already imported for the skill bundle.
+
+**What was not four lines is the guard, and it is the part worth recording.**
+SPEC § Provisioning split step 4 justifies the upload as *"so all ten sessions
+grade against a byte-identical document"*. That claim is only true while the
+uploaded bytes still **are** the repo's bytes, and nothing in the build would
+ever have noticed that they were not. Files are immutable and there is no update
+endpoint, so editing `agent/rubric.md` after upload leaves `RUBRIC_FILE_ID`
+pointing at the previous document while `pnpm provision` reports *"already
+provisioned"* and every graded session quietly grades against the old text.
+
+That is D-033's skill immutability one layer down, with D-041's failure signature
+— a run that looks entirely successful and is measuring the wrong thing. The
+already-provisioned branch therefore reads `files.retrieveMetadata` and compares
+`size_bytes` against the local file, mirroring the `memoryStores.retrieve` check
+at step 3, and `--new-rubric` is the explicit remedy, symmetric with
+`--new-skill-version` and explicit for D-033's reason: provisioning is safe to
+re-run precisely because it does not mint resources on its own initiative.
+
+Proven live, all three branches, for the price of one upload:
+
+```
+✓ rubric file  file_011CdjL8WsMZFQKo7iTQM6MG (4353 bytes)
+✓ rubric file  file_011CdjL8WsMZFQKo7iTQM6MG (already provisioned, 4353 bytes, matches)
+Error: agent/rubric.md has changed since it was uploaded — local 4381 bytes,
+       file_011CdjL8WsMZFQKo7iTQM6MG holds 4353. Files are immutable, so every
+       graded session is still grading against the OLD document.
+```
+
+**Stated limit:** `size_bytes` is a length check, so an edit that preserves the
+byte count passes it. It is the whole metadata response and costs one read, and
+the deliberate case has `--new-rubric`, so the guard only has to catch the
+accidental one. A content comparison would need `files.download`, whose
+availability depends on `FileMetadata.downloadable` and which nothing in this
+build has exercised.
+
+The superseded file is deliberately **not** deleted. Committed traces in
+`docs/evidence/` carry the old `file_id` on their `user.define_outcome` events,
+and deleting it would make those artifacts unresolvable.
+
+### D-051 · `--outcome` accepted a typo and reported GATES MET
+
+Found for $0 while reading `run.ts`'s flags before spending, in the same spirit
+as D-049.
+
+`--tickets` has validated its ids since Phase 4 (`run.ts:551-553` throws on an
+unknown one). `--outcome` did not: it was a bare
+`new Set(values.outcome?.split(","))`. So `pnpm session --outcome T-06` — one
+transposed character — produced a **fully ungraded run** in which
+`graded.has(ticket_id)` was false for every ticket, every ticket shipped by
+`user.message`, and the driver printed **GATES MET**, because in Phase 4 and
+Phase 5 no gate depended on the grader having run.
+
+Latent until Phase 6 and lethal in it: the acceptance criterion is about
+`span.outcome_evaluation_end` events, and the failure mode is a clean green run
+that produced none. Now validated against the run's own ticket list, with `all`
+as the shorthand the ten-ticket gate run needs. Two further belts, because a
+silent downgrade is the shape of the bug rather than the typo:
+`RUBRIC_FILE_ID` is required through `requireIds` **conditionally**, only when
+`--outcome` is non-empty, so an ungraded run still works with no rubric
+provisioned and a graded one cannot start without it; and `runTicket` throws if
+it is asked to grade a ticket with no rubric id rather than falling back to
+`user.message`.
+
+Conditional rather than unconditional because the ungraded path is what the
+committed Phase 4 and Phase 5 evidence was produced on, and A-8's ruling keeps it.
+
+### D-052 · The grader strips criterion numbers, so A-7's stated mechanism does not work
+
+**A-7 was accepted, and its mechanism was wrong.** The amendment's filed
+recommendation (this file, the Phase 5 status table) was to *"number and name
+`agent/rubric.md`'s five criteria so each one is individually quotable"*. Phase 4
+had already run that experiment without anyone reading it that way.
+
+`PROBE_RUBRIC` (`run.ts:109-116`, now deleted) numbered its three criteria `1.`
+`2.` `3.`. Across the three real `span.outcome_evaluation_end` events in
+`docs/evidence/phase-4-probe-T-006.jsonl` and `phase-4-probe-fixed-T-006.jsonl`,
+**not one of the nine bullets carries a leading digit.** A gate asserting on the
+numbers would have failed on correct grader output — D-040's cry-wolf failure,
+reintroduced.
+
+What is stable across all three, and is what the gate uses instead:
+
+| Observed | Used for |
+|---|---|
+| One `- ` bullet per criterion, in rubric order | counting |
+| Exactly one `(met)` or `(not met)` per bullet; label count == criterion count | the verdict |
+| Bullets echo the criterion's **opening text** | the anchor |
+| Lead line `An independent grader found …`, and `Please revise your work …` on `needs_revision` | neither is a bullet, so neither is counted |
+
+And one negative result that is equally load-bearing: **the echo is not
+byte-exact.** Terminal periods drop; criterion 3's second sentence was echoed in
+one evaluation, truncated in another and omitted in a third. So the anchor is a
+short distinctive prefix — `Valid category`, `Traceable justification`,
+`Correct escalation`, `Grounded draft`, `Instruction isolation` — and never a
+full criterion string.
+
+`src/grader.ts` holds this as three pure functions with no I/O and no SDK types,
+and `tests/grader.test.ts` runs them **against the three real explanations**,
+which cost $0 because Phase 4 already committed them. It deliberately does not
+use `tests/fixtures/synthetic-events.jsonl:20`, whose hand-written explanation
+carries no lead line, no per-criterion bullets and no verdict labels: it matches
+no format the platform emits, and a parser tested only against it would be tested
+against a straw man. That fixture is left alone; its job is the consumer, not
+this parser.
+
+**A second measurement decided the rubric's shape.** `define-outcomes.md:29-53`
+shows a rubric with five `##` sections and about fourteen bullets whose sample
+explanation reports *"All 12 criteria met"* — the unit of grading is the item,
+not the heading. So `agent/rubric.md` is five numbered items with **no nested
+sub-lists**; a nested bullet inside criterion 3's four protected grounds would
+have been graded as a sixth criterion and broken the five-label gate. The
+numbering survives for human readers and nothing depends on it. Held by a test
+rather than by memory, and mutation-checked per D-027.
+
+### D-053 · Criterion 3 narrowed to bite on D-039, and what that actually bought
+
+**Ruled by the operator at the top of Phase 6, before the rubric was written:
+let criterion 3 bite, narrowly.** D-039 recorded that the agent escalates four
+tickets the seeded data designs to auto-resolve — T-001, T-002, T-003, T-010 —
+reproduced across two live runs, and that one round of prompt-tightening did not
+hold. SPEC § Rubric calls escalating a clear case a soft fail and assigns the
+correction to the grader.
+
+**The shape of the wording, and why the guard did not simply get weaker.** SPEC's
+original criterion 3 protects every escalation unconditionally: *"Revision
+feedback must never propose converting an escalation into a resolution."* That
+sentence exists for T-006, and it is also what makes the criterion powerless
+against D-039. The narrowing makes the protection **conditional on the ground the
+escalation itself states**: genuine ambiguity, a claim no record supports,
+adversarial content, or an account not found are a full pass and are never
+revisable; the single failing case is an escalation stating none of those four
+whose missing fact is already in the decision's own citations. *Naming another
+team as the party who performs the remedy is not a ground.*
+
+T-006, T-008 and T-009 fall under the protected grounds **by construction rather
+than by ticket id**, which is what let the change ship without touching the
+gates. A run-level negative control asserts criterion 3 is never marked `not met`
+on any of the three. It held on both live runs.
+
+**The grader engaged with the wording rather than rubber-stamping it**, and named
+the ground — from the dev run, T-006 iteration 0:
+
+> Correct escalation (met): The escalation is justified on ground #2: the ticket
+> rests on a claim of a verbal promise regarding a priority support add-on from
+> June, which cannot be verified from account records. … The account was found,
+> the ticket does not contain instructions to the assistant, so grounds #3 and #4
+> don't apply, but ground #2 clearly applies.
+
+**What it moved, measured against the committed Phase 4 baseline.** One ticket of
+the four, and the agent said why in its own revision turn:
+
+> The grader correctly pointed out that I was escalating based on "naming another
+> team" (human reviewers) to perform the remedy, which is not a valid escalation
+> ground.
+
+| ticket | Phase 4 | Phase 6 | |
+|---|---|---|---|
+| T-001 | escalate | escalate | held; flipped to `auto_resolve` on the aborted attempt, so it is not stable |
+| T-002 | escalate | **auto_resolve** | moved |
+| T-003 | escalate | escalate | held |
+| T-010 | escalate | escalate | held |
+
+**Three costs, all real, none of which the ruling anticipated.**
+
+1. **It is not deterministic.** T-001 flipped to `auto_resolve` on the first
+   ten-ticket attempt and held its escalation on the second, same rubric, same
+   agent version, one hour apart. Whether criterion 3 bites depends on how the
+   agent happens to phrase its `escalation_reason` — the criterion tests the
+   stated ground, and the stated ground is generated text.
+2. **It triples the cost of a ticket it argues with.** T-002 $0.2135 and T-003
+   $0.2187 against $0.0568 for a ticket that satisfies on pass one. Each
+   revision is an agent turn plus an evaluation.
+3. **It drove three tickets into the iteration cap without converging.** T-002,
+   T-003 and T-007 ended `max_iterations_reached`, and T-002 and T-003
+   **oscillated** — escalate → auto_resolve → escalate, and escalate →
+   auto_resolve → auto_resolve. Criterion 3 pushes toward resolving; criteria 2
+   and 4 then demand citations the agent does not have for the resolution it just
+   wrote. For those two tickets the rubric's own criteria are in tension.
+
+**And the grader invented a fifth ground.** On T-007 it marked criterion 3 not
+met with a reason the rubric does not list: *"which is a ground for escalation
+(the ticket rests on a situation requiring human intervention beyond
+information-giving)"*. T-007 auto-resolved in Phase 4 and was not a D-039 ticket
+at all. So the narrowing did not only tighten one direction; it gave the grader a
+frame it then extended on its own.
+
+**Honest summary:** the mechanism works, the wording is enforceable, and the
+guard on the three gate tickets held on every evaluation of both runs. But one of
+four target tickets moved, the correction is unstable across runs, and it costs
+roughly 3× on the tickets it argues with. This is a partial result reported as
+one, not a success. Phase 7 has the measurement it needs to decide whether the
+remaining lever — the prompt counterweight in `SKILL.md:179-196` and
+`agent.yaml:41-43`, which today state the cost of guessing and never the cost of
+over-escalating — is worth an agent version.
+
+### D-056 · The decision in the artifact had never been graded
+
+**Found in the acceptance trace, and it inverted two dispositions.**
+
+`define-outcomes.md:606`, on `max_iterations_reached`: *"One final acknowledgment
+turn follows before the session transitions to `idle`."* The agent uses that turn
+to submit again. `run.ts` recorded the last submission that passed validation —
+so for any ticket that exhausted the cap, the decision written to
+`docs/evidence/*-decisions.json` was one **no grader ever saw**:
+
+```
+T-002  escalate → grade → auto_resolve → grade → escalate → grade(max_iter) → auto_resolve
+T-003  escalate → grade → auto_resolve → grade → auto_resolve → grade(max_iter) → escalate
+                                                                                  ^ recorded
+```
+
+It also explains an apparent contradiction that looked at first like a grader
+fault: the final explanation for T-002 argues against an escalation while the
+JSON records `auto_resolve`, and for T-003 the reverse. The grader was not
+confused. It was describing a different decision.
+
+`lastGradedSubmissionIndex` in `src/grader.ts` picks the last
+`agent.custom_tool_use` preceding the final `span.outcome_evaluation_end`, and
+the driver records that one, logging the divergence when there is one. It returns
+null when nothing was graded, so an ungraded run is untouched.
+
+Two reasons it returns an index rather than a decision: it keeps `grader.ts` free
+of `decision.ts`, and it makes the same function run live over
+`ConsumerResult.events` and offline over a committed JSONL trace. The offline
+half is how it is proven — `tests/grader.test.ts` runs it against
+`phase-6-T-002.jsonl` and `phase-6-T-003.jsonl`, the two traces that exposed it,
+for $0 on D-040's precedent. Mutation-checked: dropping the "preceding the final
+evaluation" term fails two tests.
+
+**The committed artifact still carries the pre-fix values, deliberately.**
+`docs/evidence/phase-6-decisions.json` was written by the acceptance run, which
+ran before this was found, so `T-002.decision.disposition` reads `auto_resolve`
+and `T-003`'s reads `escalate` — the ungraded resubmissions. Editing it by hand
+would turn a captured artifact into a claim, which is the one thing evidence may
+not be. The traces beside it carry every submission in order, so the graded
+decision is recoverable from them, and `tests/grader.test.ts` does exactly that.
+The fix applies from the next run.
+
+**Recorded and not fixed here:** SPEC § Bounded iteration says *"A ticket that
+exhausts either bound escalates by definition."* T-002 and T-007 exhausted it and
+their graded decisions are `auto_resolve` and `auto_resolve`. `TicketOutcome` has
+no member for a ticket the grader never accepted, so all three are recorded
+`decided`. That is amendment **A-18**, now live rather than hypothetical, and it
+is a change to a published shape — the operator's call, not one to make while
+closing a phase.
+
+### D-057 · Phase 5's memory gates were written against a two-ticket run and over-generalised
+
+**Not a Phase 6 regression. The first run that could expose them is this one:**
+Phase 4 ran ten tickets with no memory, Phase 5 ran two tickets with memory, and
+ten-tickets-with-memory had never happened. It puts **four** tickets on ACC-2001
+— T-002, T-003, T-004, T-008 — where Phase 5 had one account per ticket.
+
+Two of the three per-handoff assertions then demanded things that are wrong:
+
+**`operation: created` from a writer that cannot create.** Only the FIRST writer
+of a path can create it; T-002 creates `ACC-2001.md` and T-003 and T-004
+legitimately `modified` it. `wasAbsent` was computed against the pre-run
+snapshot, which after `--reset-memory` is empty for every path, so every writer
+was asked for a `created`. Now the predicate also requires the writer to be the
+first writer of that path **in this run**, derived from the run order that
+already builds the handoff list.
+
+A second, independent bug in the same line: `find` picked one version row per
+path, and a graded ticket that goes round the revision loop submits and re-records
+several times. T-002 produced four rows for one path — three `modified` and one
+`created` — and `find` returned a `modified`. `some` is the fix.
+
+**"the reader names the writer's ticket" demanded incorrect behaviour.**
+`SKILL.md:47-49` says to name the earlier ticket *"when an earlier ticket on this
+account bears on this one"*. T-010 follows up on T-001's duplicate charge and
+names it. T-003 (password reset) does not bear on T-002 (CSV export), and naming
+it would be the agent inventing a connection. Phase 5's two tickets were related,
+so every derived handoff was a designed one; ten tickets manufacture three
+incidental ones.
+
+SPEC ship-gate condition 4 is **existential** — *"Memory written in session A is
+provably read and used in session B"* — so the universal form was stricter than
+SPEC asks and stricter than correct. The gate now requires the memory-exclusive
+token on **at least one** handoff and prints every handoff either way, named or
+not, so a thin result cannot hide behind an existential. It stays falsifiable for
+the reason D-045 built it: a run with no memory store carries the token on zero
+handoffs and fails.
+
+Both corrections re-verified against the committed acceptance artifacts for $0,
+per D-040 — 4 of 4 handoffs pass the corrected attribution check, and the token
+is carried by T-010←T-001, the designed handoff. **The memory content itself was
+correct throughout**: the final `ACC-2001.md` holds exactly four lines, one per
+ticket, in order, no duplicates, despite T-002's four version rows.
+
+### D-054 · The graded path needs its own wall clock, because a timeout is disqualifying
+
+`DEADLINE_MS` has been 5 minutes per ticket since Phase 4, sized for one agent
+turn. A graded ticket does that turn plus up to `max_iterations` evaluate-and-
+revise cycles with an agent turn between each; the Phase 4 probe spent 47 seconds
+on one revision and its re-evaluation alone.
+
+The reason this is not merely a slowness question: on expiry the driver sends
+`user.interrupt`, and `define-outcomes.md:608` says an interrupt marks the
+evaluation `interrupted` *"even if evaluation hadn't started yet"*, with an empty
+`outcome_evaluation_start_id` in that case. An `interrupted` evaluation is
+exactly the shape that fails SPEC § Verification assertion 5's *"non-empty
+`explanation`"* clause — so a wall-clock overrun would not degrade the gate run,
+it would fail it, for a reason unrelated to triage quality. `GRADED_DEADLINE_MS`
+is 8 minutes and applies only when a rubric is attached.
+
+### D-055 · The Phase 4 measurement was confounded: a `needs_revision` explanation lists only the failures
+
+**D-052's rule was right about the format and wrong about the count, and only a
+partial failure could have shown it.**
+
+Phase 4's three real evaluations supported a clean rule — one bullet per
+criterion, always, bullet count == label count == criterion count, 3 == 3 == 3
+three times. Two of those evaluations were `satisfied` and enumerated
+everything. The third was `needs_revision` **with all three criteria failing**,
+so "lists the failures" and "lists all" produced an identical list. The
+confound was invisible because the probe rubric had no criterion that passed
+while another failed.
+
+The first ten-ticket attempt broke that on ticket one. T-001's iteration 0,
+verbatim from `tests/fixtures/grader-revision-real.jsonl`:
+
+> An independent grader found **the following criteria are not fully met**:
+>
+> - Correct escalation (not met): …
+
+**One bullet. Five criteria.** Four passed and were not mentioned. The lead line
+says so plainly, and it is a different lead line from the `satisfied` one.
+
+Two things this broke, both caught by the run rather than by reasoning:
+
+1. **The gate was per-evaluation, and had to become per-`satisfied`-evaluation.**
+   This took two corrections, and the first one was also wrong. Moving it to
+   per-TICKET assumed every ticket reaches a terminal `satisfied`. Three did not:
+   T-002, T-003 and T-007 ended `max_iterations_reached`, whose explanation
+   enumerates only the still-unmet criteria exactly as `needs_revision` does —
+   its own lead line is *"Reached 3 revision cycles without satisfying the
+   rubric"*. A full five-criterion enumeration exists **only on `satisfied`**,
+   and that is a platform property, not an agent defect. Measured over all 18:
+
+   | result | evaluations | criteria enumerated |
+   |---|---|---|
+   | `satisfied` | 7 | 5 of 5, every time |
+   | `needs_revision` | 8 | 1 to 2 |
+   | `max_iterations_reached` | 3 | 1 to 3 |
+
+   `SPEC.md` § Verification assertion 5 is amended to the satisfiable form, with
+   the count of `satisfied` evaluations carried alongside so it cannot pass
+   vacuously on a run where nothing satisfied. Which tickets never received a
+   full enumeration is **reported**, not hidden — silence there would read as
+   "all ten were fully scored".
+
+2. **The driver labelled criteria by position, which is D-040's failure exactly.**
+   With one bullet in the list, `CRITERION_ANCHORS[0]` printed T-001's failing
+   **Correct escalation** as **Valid category** — a report naming the wrong
+   criterion as broken, sitting directly beside a real finding. `CriterionVerdict`
+   now carries the `anchor` it MATCHED, resolved from the echoed text, and the
+   printout never indexes by position.
+
+The trace is promoted byte-for-byte to `tests/fixtures/grader-revision-real.jsonl`
+on D-021's precedent, because the gate run overwrites `docs/evidence/phase-6-T-001.jsonl`
+and this is the only committed evidence of a partial enumeration. Both corrections
+are mutation-checked per D-027: resolving the anchor by position fails one test,
+and requiring every evaluation to enumerate all five fails another.
+
+**And a third label exists that Phase 4 never emitted.** `Verdict` was
+`"met" | "not met"`, because those are the only two the probe produced. Across
+the acceptance run's 18 evaluations the grader wrote **`(partially met)` seven
+times** — 35 `met`, 9 `not met`, 7 `partially met` — and a parser matching only
+the first two dropped every one of them **silently**. Three evaluations parsed as
+zero criteria named while their text plainly named one. That is D-040's failure
+with the sign reversed: not crying wolf, but under-reporting real findings, which
+is the worse of the two because nothing looks wrong. The union now has three
+members and a test pins all three counts, plus an independent recount of the raw
+labelled bullets so nothing can be dropped again without turning it red.
+
+The 35 `met` are exactly the 7 `satisfied` evaluations at five criteria each,
+which is the same measurement as the table above arriving from the other side.
+
+**Why the run that found this was not wasted.** It cost $0.1678 and stopped after
+one ticket on the budget projection — `projected = spentHi + (spentHi/(i+1)) *
+remaining` extrapolated T-001's revision-cycle cost across all ten and read
+$1.68 against a `--budget` of $1.20. The stop worked as designed; the budget was
+set from the un-revised dev-run average and T-001 is the ticket the narrowed
+criterion 3 was most likely to send round the loop. Sixteen cents bought the
+correction to a gate that would otherwise have failed the acceptance run for a
+reason that was not a defect.
+
+---
+
 ## Proposed `SPEC.md` amendments
 
 SPEC § Subagents: *"A finding that contradicts this spec is escalated to the
@@ -1216,16 +1622,28 @@ A-14 are all unruled and Phase 6 starts next**, which is the last boundary befor
 the grader, the rubric and the ten-ticket graded run make several of them
 load-bearing. A recommendation for each, so the batch can be ruled in one pass:
 
+**Status, as of Phase 6 (2026-08-05).** **A-7 and A-8 are ruled, accepted, and
+applied to `SPEC.md`** — they were the two that decided what Phase 6 could write,
+so they were put up before the rubric was drafted rather than at the boundary.
+A-7 was accepted **with its mechanism corrected by measurement**: numbering the
+criteria does not make them quotable, because the grader strips the numbers. See
+D-052. **A-9 through A-14 remain unruled**, and A-15 through A-18 are new; none
+of the eight blocks Phase 7, and the batch is listed below.
+
 | # | Subject | Recommendation |
 |---|---|---|
-| A-7 | Condition 5 asks for a "per-criterion rubric score" that has no structured form | **Accept.** Restate as "an explanation naming each criterion and its verdict", which is what the platform emits. The alternative asserts on a field that does not exist. Numbering `agent/rubric.md`'s five criteria is then a Phase 6 constraint, decided rather than discovered. |
-| A-8 | § Session topology step 3 and § Cost controls #4 cannot both hold | **Accept.** `define_outcome` for graded runs, `user.message` for ungraded, never both on one session. Note the cost it names: Phase 4's and Phase 5's results are all on the `user.message` path, and Phase 6 should re-prove the gate tickets under `define_outcome` rather than assume they transfer. |
+| A-7 | Condition 5 asks for a "per-criterion rubric score" that has no structured form | ✅ **ACCEPTED 2026-08-05, APPLIED, mechanism corrected.** Restated as "an explanation naming each rubric criterion and its verdict". The filed remedy — number the criteria — was measured to fail: the Phase 4 probe numbered them and the grader stripped every number. The anchor is the criterion's echoed opening text. See D-052. |
+| A-8 | § Session topology step 3 and § Cost controls #4 cannot both hold | ✅ **ACCEPTED 2026-08-05, APPLIED.** `define_outcome` for graded runs, `user.message` for ungraded, never both on one session. Step 3 rewritten. Phase 6 re-proved the gate tickets under `define_outcome` rather than assuming Phase 4/5's results transferred. |
 | A-9 | § Runtime configuration pins `version: "1"`; custom skill versions are epoch strings | **Accept, text-only.** Already correct in code. Phase 5 minted `1785915306195089`, which is the third such value; `"1"` is not a value the API returns. |
 | A-10 | § Decision capture rests on an unsourced "one to three second Files API indexing lag" | **Accept.** Drop the clause. Replace it, if anything, with the reason the custom tool earned in Phase 4: it returns the decision to the host synchronously, so a malformed payload can be rejected and corrected, which a file cannot do. The other two stated reasons stand unaided. |
 | A-11 | § Memory's mount path is wrong and the failure is silent | **Accept.** The only one whose cost is data loss with no error signal. |
 | A-12 | § Verification assertion 4's citation clause is satisfied with no memory attached | **Accept.** Measured against the committed Phase 4 baseline. |
 | A-13 | § Cost controls #1 now points at `list_cost`, whose units moved | **Accept.** Keep `session.usage` authoritative for tokens; stop treating `list_cost` as a dollar figure. |
 | A-14 | § The guardrail split's three `system` rules do not cover memory content | **Rule either way, and the gap is closed meanwhile.** The Phase 5 mitigation is in `instructions`, which reaches the system prompt on every session this driver creates. Widening rule 1 is more durable and costs an agent version. |
+| A-15 | § Verification assertion 5 asks for a grader token sum that cannot exist | **Accept.** The clause *"Total grader token usage summed from the end events and printed"* is unobtainable: `span.outcome_evaluation_end.usage` is zero-filled on every evaluation this build has ever seen — three in Phase 4, and every one in Phase 6. `cost.ts` prints the honest warning instead and derives the grader share from `session.usage`. A-1 amended § Cost controls to match in Phase 4; assertion 5 was simply missed. Same ruling, applied one section later. |
+| A-16 | § The SSE consumer says `_start` and `_ongoing` carry fields they do not | **Accept, text-only.** SPEC asks for grader progress *"from `span.outcome_evaluation_start`, `_ongoing`, and `_end`, including `result`, `explanation`, `iteration`, and the `usage` block"*. Only `_end` carries `result`, `explanation` or `usage`; `_start` and `_ongoing` carry `{id, iteration, outcome_id, processed_at, type}` and nothing else (`events.d.ts:1017-1059`). `src/events.ts` is already correct; only the sentence is loose. |
+| A-17 | § Verification says "Two fixtures"; there are five | **Accept, text-only.** Phase 5 added `memory-events.jsonl` (synthetic) and `memory-handoff-real.jsonl` (real, D-048); Phase 6 adds `grader-revision-real.jsonl` (real, D-055). The real/synthetic separation rule the sentence exists to state is intact and worth keeping; only the count is stale. |
+| A-18 | `TicketOutcome` has no member for a ticket the grader could not satisfy | **Report, do not choose — SPEC is silent.** `types.ts:37-41` offers `decided`, `escalated_by_timeout`, `escalated_by_validation`, `errored`. A ticket ending `max_iterations_reached` or `failed` is currently recorded as `decided` if a valid submission was accepted, which is true but loses the fact that the grader never accepted it. No ticket has hit either result yet, so this is a gap and not a defect. Adding a member changes a published shape; the operator decides whether it is worth it. |
 
 ### A-1 · ✅ ACCEPTED 2026-08-04, APPLIED — § Cost controls #1 describes a method that under-reports
 
@@ -1403,7 +1821,20 @@ declarations, not `reference.md`. Worth correcting because D-018's claim that
 each of the five is "now sourced" is what a reader would rely on, and `/defend`
 answers from this file.
 
-### A-7 · § Verification condition 5 asks for a "per-criterion rubric score" that has no structured form — RAISED IN PHASE 4
+### A-7 · ✅ ACCEPTED 2026-08-05, APPLIED — § Verification condition 5 asks for a "per-criterion rubric score" that has no structured form
+
+**Ruled on by the operator at the top of Phase 6, before the rubric was written,
+because it decided what the rubric had to say.** Condition 5 now reads *"an
+explanation naming each rubric criterion and its verdict"*, and assertion 5 gains
+the machine-checked form of that.
+
+**The suggested mechanism below was measured to be wrong and was corrected in the
+ruling.** This entry's last paragraph proposed numbering the five criteria "so
+each one is individually quotable". Phase 4 had already run that experiment
+without it being read that way: `PROBE_RUBRIC` numbered its criteria and the
+grader stripped every number from all nine bullets. The anchor is the criterion's
+echoed **opening text**. Full reasoning in D-052; the count rule that survived
+first contact is in D-055. The original text follows.
 
 SPEC § Verification, condition 5: *"The outcomes grader returns a **per-criterion
 rubric score**."* Assertion 6 wants a screenshot of *"a
@@ -1434,7 +1865,21 @@ Consequence for Phase 6: `agent/rubric.md` should number and name its five
 criteria so each one is individually quotable in the explanation. That is a
 constraint on the rubric text, decided now rather than discovered later.
 
-### A-8 · § Session topology step 3 and § Cost controls #4 cannot both be satisfied — RAISED IN PHASE 4
+### A-8 · ✅ ACCEPTED 2026-08-05, APPLIED — § Session topology step 3 and § Cost controls #4 cannot both be satisfied
+
+**Ruled on by the operator at the top of Phase 6.** SPEC § Session topology
+step 3 is rewritten: `user.define_outcome` for graded runs, `user.message` for
+ungraded, never both on one session. `--outcome` stays opt-in, so the expensive
+path is the one typed deliberately and the committed Phase 4 and Phase 5 evidence
+stays reproducible on the path that produced it.
+
+Two things the ruling carried into the implementation. The delivery text is
+**shared byte-for-byte** between the two vehicles — `description` is documented
+as "the task specification", a more authoritative frame than a chat turn, so
+T-008's payload must arrive inside the same fence either way. And the amendment's
+own warning was honoured rather than assumed away: the gate tickets were
+re-proven under `define_outcome` rather than inherited from Phase 4. The original
+text follows.
 
 SPEC § Session topology step 3: *"Send `user.define_outcome` with the ticket body
 in `description` … **No separate `user.message`**; the outcome event starts the
