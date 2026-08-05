@@ -383,6 +383,46 @@ is **Admin**, which satisfies `events-and-streaming.md:2727` — tracing views a
 screenshots are obtainable, so the evidence half of the ship gate is unblocked
 and Phase 8 does not have to discover this while trying to close.
 
+**MEASURED 2026-08-05, after Phase 6.** The click this entry recommended was
+made. The page rendered: the Phase 5 handoff session `sesn_01MsMEFNwT6upYjN37g6RgFn`
+opens as *"Triage T-010 · Terminated"*, on workspace
+`wrkspc_01LuDSz1dfWPHtWuytSwaLxn`, under the account's own Admin login. Both
+limits this entry recorded are now closed together — the role claim is no longer
+an operator statement standing in for a measurement, and it was the workspace
+that mattered rather than the organization. **`consoleTraceUrl()`'s constructed
+template is correct**, which is what nothing in `docs/reference/` could tell us.
+
+Three things the rendered page gave beyond the yes/no, none of them documented:
+
+1. **`?event=<sevt_id>` deep-links to a single event** and opens the inspector on
+   it — verified against the committed trace, where the linked
+   `sevt_01VLR1SNycnGgiEnz1Bb3X33` is T-010's final `agent.message`. A
+   case-insensitive search for it across all eighteen reference pages returns
+   zero hits. `docs/EVIDENCE.md` can therefore cite the exact
+   `span.outcome_evaluation_end` rather than a session plus an instruction to
+   scroll, which is a materially better artifact for ship-gate condition 6.
+   `consoleTraceUrl()` takes only a session id today; giving it an optional event
+   argument is Phase 7 work.
+2. **The session header renders four primitives as chips** — agent, environment,
+   vault, memory store — plus `1 output`, which is the
+   `/mnt/session/outputs/T-010.json` file D-032 exists to produce. The transcript
+   shows `Write, Submit Triage Decision` and then
+   `Edit /mnt/memory/inbox-triage-accounts/accounts/ACC-2004.md`, so `SKILL.md`'s
+   step 6 → 7 → 8 ordering, and the memory-write-last rule D-043 explains, are
+   both visible without reading a byte of JSON.
+3. **A `Debug` tab and an export control exist** beside `Transcript`. Neither has
+   been used. Recorded so Phase 7 evaluates them before hand-building anything
+   the Console already emits.
+
+**One caution the same screen raised.** The Console shows a `Credits` figure at
+the **organization** level (US$10.38 when checked). That is not this build's
+headroom: the project key is permanently bound to a workspace carrying a **$5
+hard limit**, and every remaining-balance figure in this file is *derived* from
+token counts rather than read from the platform. Two different meters. The
+workspace's own usage view is an independent check worth taking before Phase 7
+spends, and if it disagrees with the derivation it is the derivation that is
+wrong.
+
 Two limits on how far that confirmation reaches, stated so Phase 8 does not lean
 harder on it than it holds:
 
