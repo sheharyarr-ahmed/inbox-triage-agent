@@ -1753,8 +1753,25 @@ offline half and a live half, and `&&` is exactly that: the suite carries
 assertion 6's `docs/EVIDENCE.md` check and the replay of assertions 1-5 against
 committed artifacts, and the driver carries the live run. `--max-iterations 3` is
 SPEC § Cost controls #3's gate-run value against the dev default of 2. `--budget`
-is appended by the caller and is not in the script, because SPEC requires it to
-be a deliberate decision per run — see D-063.
+is appended by the caller and is deliberately NOT in the script, because SPEC
+requires it to be a decision per run — see D-063.
+
+**`--reset-memory` IS in the script, and it was added after the first gate run
+had to be aborted for its absence.** The run started against a store carrying
+6 memories left by Phase 6, and the driver printed exactly that
+(`store before 6 memories`) before doing any work. It would not have hard-failed:
+`run.ts:1209` computes `mustCreate` from the pre-run snapshot, so D-057's
+corrected predicate accepts a `modified` on a path that already existed. It would
+have produced a **weaker artifact**, which is worse, because nothing would have
+said so. D-044 established why: starting empty is what forces the first write to
+be an `operation: 'created'`, what makes "session A read and found nothing" a real
+negative control, and what closes the byte-identical-rewrite blind spot that no
+other layer can see. `docs/evidence/phase-6-memory-before.json` is `[]` — the
+run this one has to be comparable with started clean.
+
+D-044 called the flag "correctness rather than convenience". The abort is the
+evidence for that sentence: a gate whose correctness depends on the operator
+remembering to type a flag is not a gate. Aborted after one ticket, ~$0.05.
 
 ### D-062 · The ship gate rehearsed against committed artifacts, before a dollar was spent
 
