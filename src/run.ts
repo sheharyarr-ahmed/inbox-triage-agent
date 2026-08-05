@@ -24,7 +24,19 @@
  * acceptance criterion names no grader, so the cheap, deterministic reading
  * wins, and `--outcome` opts specific tickets in for the A-4 probe.
  *
- *   usage:  pnpm session -- [options]
+ * MEMORY (Phase 5). Every session attaches the store in `resources[]` at
+ * CREATION — the only time it can be attached (memory.md:211). The mount path is
+ * READ off the create response and never constructed; see `src/memory.ts` for
+ * why that distinction is the trap of the phase. Verification is host-side and
+ * out of band, per SPEC § Memory: the driver reads the store back through
+ * `memories.list` and `memoryVersions.list` and never takes the agent's word.
+ *
+ *   usage:  pnpm session [options]
+ *
+ * NO `--` SEPARATOR. pnpm forwards unknown flags to the script already, and a
+ * literal `--` terminates option parsing for `node:util`'s parseArgs, which then
+ * rejects every flag after it as an unexpected positional. `pnpm session -- …`
+ * fails with ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL.
  *
  *     --tickets T-006,T-008     subset to run          (default: all ten)
  *     --outcome T-006           deliver these by user.define_outcome + rubric
@@ -32,6 +44,7 @@
  *     --budget N                dollars, hard stop     (default: 1.50)
  *     --agent-version N         override the pin       (default: .env.local)
  *     --label NAME              evidence file prefix   (default: phase-4)
+ *     --reset-memory            delete /accounts/* before the run
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -48,8 +61,30 @@ import {
   type Tally,
 } from "./cost.js";
 import { TriageDecision } from "./decision.js";
-import { SpendLimitReached, consumeSession, type ConsumerResult } from "./events.js";
-import { inventedAccountFields, unsupportedClaims } from "./assertions.js";
+import {
+  SpendLimitReached,
+  consumeSession,
+  readEventsJsonl,
+  type ConsumerResult,
+} from "./events.js";
+import {
+  inventedAccountFields,
+  memoryReads,
+  memoryRecordViolations,
+  unsupportedClaims,
+  writesOutsideMount,
+  type MemoryRead,
+} from "./assertions.js";
+import {
+  INJECTION_MEMORY_LITERAL,
+  MEMORY_INSTRUCTIONS,
+  changedSince,
+  memoryMountPath,
+  resetAccounts,
+  snapshotStore,
+  versionsBySession,
+  type MemorySnapshot,
+} from "./memory.js";
 import { Tickets, type Ticket, type TicketOutcome } from "./types.js";
 
 /** Per-ticket wall clock. SPEC § Bounded iteration: a stuck session must not bill. */
@@ -117,6 +152,22 @@ function deliveryText(t: Ticket): string {
   ].join("\n");
 }
 
+/** What this session did to the memory store, established host-side. */
+type MemoryReport = {
+  /** Read off the session resource, never constructed. */
+  mountPath: string;
+  /** Reads under the mount, each paired with the sandbox's own tool_result. */
+  reads: MemoryRead[];
+  /** Writes under /mnt/memory/ that missed the mount and were silently discarded. */
+  writesOutsideMount: string[];
+  /** Store paths that appeared or whose content changed while this session ran. */
+  changed: string[];
+  /** Versions the PLATFORM attributes to this session id. The anti-false-pass proof. */
+  wrote: { path: string; operation: string; sha: string; content: string }[];
+  /** Tripwire hits on anything this session changed. Empty is a pass. */
+  violations: string[];
+};
+
 type TicketRun = {
   ticket: Ticket;
   sessionId: string;
@@ -127,13 +178,24 @@ type TicketRun = {
   mcpCalls: string[];
   graderResults: { result: string; iteration: number; explanation: string }[];
   cost: { lo: number; hi: number };
+  /**
+   * `session.usage.list_cost` VERBATIM. Deliberately not parsed to a number and
+   * deliberately not used for anything that matters — see the capture site.
+   */
+  listCost: { amount: string; currency: string } | null;
   agent: Tally;
   sessionUsage: SessionUsage | undefined;
+  memory: MemoryReport;
 };
 
 async function runTicket(opts: {
   client: Anthropic;
-  ids: { ENVIRONMENT_ID: string; AGENT_ID: string; VAULT_ID: string };
+  ids: {
+    ENVIRONMENT_ID: string;
+    AGENT_ID: string;
+    VAULT_ID: string;
+    MEMORY_STORE_ID: string;
+  };
   agentVersion: number;
   ticket: Ticket;
   withOutcome: boolean;
@@ -141,19 +203,48 @@ async function runTicket(opts: {
   tracePath: string;
 }): Promise<TicketRun> {
   const { client, ids, ticket, tracePath } = opts;
+  const storeId = ids.MEMORY_STORE_ID;
   rmSync(tracePath, { force: true });
+
+  // Taken BEFORE the session exists, so nothing this session does can have
+  // produced it. One of three independent layers against a false pass.
+  const before: MemorySnapshot = await snapshotStore(client, storeId);
 
   const session = await client.beta.sessions.create({
     agent: { type: "agent", id: ids.AGENT_ID, version: opts.agentVersion },
     environment_id: ids.ENVIRONMENT_ID,
     vault_ids: [ids.VAULT_ID],
     title: `Triage ${ticket.ticket_id}`,
+    // SPEC § Session topology step 1. Memory stores attach ONLY here:
+    // sessions.resources.add() takes a hard `type: 'file'` literal and cannot
+    // express one (memory.md:211). `instructions` is rendered into the system
+    // prompt on every session, which is why the write guardrail lives there
+    // rather than in the skill — SPEC § The guardrail split.
+    resources: [
+      {
+        type: "memory_store",
+        memory_store_id: storeId,
+        access: "read_write",
+        instructions: MEMORY_INSTRUCTIONS,
+      },
+    ],
     // No initial_events, so the session starts idle and the stream attaches
     // before any work begins (session-operations.md:19).
   });
 
+  // Read, never constructed. Throws rather than falling back — a constructed
+  // path produces a run that looks successful and writes into scratch.
+  let mountPath: string;
+  try {
+    mountPath = memoryMountPath(session, storeId);
+  } catch (err) {
+    await client.beta.sessions.archive(session.id).catch(() => {});
+    throw err;
+  }
+
   console.log(`  session   ${session.id}`);
   console.log(`  trace     ${consoleTraceUrl(session.id)}`);
+  console.log(`  memory    ${mountPath}  read_write, from the session resource`);
 
   /**
    * The last submission that PASSED validation. Deliberately not
@@ -180,6 +271,7 @@ async function runTicket(opts: {
 
   let result: ConsumerResult | undefined;
   let errored = false;
+  let listCost: { amount: string; currency: string } | null = null;
 
   try {
     result = await consumeSession({
@@ -251,7 +343,45 @@ async function runTicket(opts: {
 
       // Persist as events arrive rather than from the returned array: the run
       // that throws is the run whose trace matters most.
-      onEvent: (event) => appendFileSync(tracePath, `${JSON.stringify(event)}\n`),
+      //
+      // It also carries `session.usage.list_cost` (D-034), on an event the SDK's
+      // TypeScript union does not declare (D-035), so it reaches the consumer's
+      // unknown-event branch and is typed here, at the one place that reads it.
+      //
+      // Deliberately NOT a new field on `ConsumerResult`: SPEC § Files quotes
+      // that type verbatim, and A-5's ruling was to keep the published contract
+      // rather than grow it for a value only the driver needs. `onEvent` exists
+      // for exactly this (D-025.3).
+      //
+      // CAPTURED VERBATIM AND NOT USED FOR ANY DECISION. D-034 proposed treating
+      // this as the authoritative dollar figure and Phase 5 measured that it is
+      // not safe to. Same field, same code path, one day apart:
+      //
+      //   2026-08-04  derived $0.018173 -> amount "0.02"     dollars, 2dp
+      //               derived $0.095156 -> amount "0.1"
+      //   2026-08-05  derived $0.026832 -> amount "3"        cents, rounded up
+      //               derived $0.032303 -> amount "4"
+      //
+      // Reading it as dollars projected $8.00 for two Haiku tickets and tripped
+      // the budget stop on a run that had spent three cents. The field is
+      // undocumented in all eighteen reference pages and absent from the SDK
+      // types, so there is nothing to pin its units to. The budget stop uses the
+      // derived figure instead, which is EXACT here: the model is pinned in
+      // agent.yaml and D-017 measured that with no grader the spans reconcile to
+      // `session.usage` field for field. See D-047.
+      //
+      // Cumulative within a session, so the last one wins — plain assignment.
+      onEvent: (event) => {
+        appendFileSync(tracePath, `${JSON.stringify(event)}\n`);
+        const e = event as {
+          type?: string;
+          usage?: { list_cost?: { amount?: unknown; currency?: unknown } };
+        };
+        const lc = e.usage?.list_cost;
+        if (e.type === "session.usage" && typeof lc?.amount === "string") {
+          listCost = { amount: lc.amount, currency: String(lc.currency ?? "") };
+        }
+      },
 
       log: (line) => console.log(`  ${line}`),
     });
@@ -304,7 +434,11 @@ async function runTicket(opts: {
   }
 
   const terminatedBy = errored ? "errored" : (result?.terminatedBy ?? "timeout");
-  const decided: TriageDecision | null = accepted;
+  // `as`, not an annotation. `accepted` is assigned only inside `onCustomToolUse`,
+  // and control-flow analysis does not follow assignments made in a callback, so
+  // it narrows to `null` here and every property read off it resolves to `never`.
+  // The value genuinely can be non-null at runtime; the narrowing is what is wrong.
+  const decided = accepted as TriageDecision | null;
   const outcome: TicketOutcome = errored
     ? "errored"
     : terminatedBy === "timeout"
@@ -312,6 +446,53 @@ async function runTicket(opts: {
       : decided === null
         ? "escalated_by_validation"
         : "decided";
+
+  // ---- memory read-back: host-side, out of band, after the session is done --
+  //
+  // SPEC § Memory: "The proof never depends on the agent's own claim that it
+  // wrote something." Nothing below reads the agent's prose. `wrote` is the
+  // load-bearing one: the platform attributes each version to the session that
+  // made it, and this session's id was minted seconds ago by this process, so a
+  // file left behind by an earlier attempt cannot satisfy it.
+  const after = await snapshotStore(client, storeId);
+  const changed = changedSince(before, after);
+  const versions = await versionsBySession(client, storeId, session.id);
+  const injectionTickets = decided?.suspected_injection ? [ticket.ticket_id] : [];
+
+  const memory: MemoryReport = {
+    mountPath,
+    reads: memoryReads(events, mountPath),
+    writesOutsideMount: writesOutsideMount(events, mountPath),
+    changed,
+    wrote: versions.map((v) => ({
+      path: v.path ?? "(redacted)",
+      operation: String(v.operation),
+      sha: v.content_sha256 ?? "",
+      content: v.content ?? "",
+    })),
+    violations: changed.flatMap((p) =>
+      memoryRecordViolations(p, after.get(p)?.content ?? "", { injectionTickets }).map(
+        (why) => `${p}: ${why}`,
+      ),
+    ),
+  };
+
+  const readSummary =
+    memory.reads.length === 0
+      ? "no memory read"
+      : memory.reads.map((r) => `${r.path}${r.result ? "" : " (no result)"}`).join(", ");
+  console.log(`  memory rd ${readSummary}`);
+  console.log(
+    `  memory wr ${memory.wrote.length === 0 ? "nothing" : memory.wrote.map((w) => `${w.path} (${w.operation})`).join(", ")}`,
+  );
+  if (memory.violations.length > 0) {
+    console.error(`  !! memory tripwire: ${memory.violations.join(" | ")}`);
+  }
+  if (memory.writesOutsideMount.length > 0) {
+    console.error(
+      `  !! wrote outside the mount, silently discarded: ${memory.writesOutsideMount.join(", ")}`,
+    );
+  }
 
   return {
     ticket,
@@ -329,8 +510,10 @@ async function runTicket(opts: {
       explanation: o.explanation,
     })),
     cost: costRange({ agent, grader, session: sessionUsage }),
+    listCost,
     agent,
     sessionUsage,
+    memory,
   };
 }
 
@@ -343,10 +526,17 @@ async function main(): Promise<void> {
       budget: { type: "string", default: "1.50" },
       "agent-version": { type: "string" },
       label: { type: "string", default: "phase-4" },
+      "reset-memory": { type: "boolean", default: false },
     },
   });
 
-  const ids = requireIds(["ENVIRONMENT_ID", "AGENT_ID", "AGENT_VERSION", "VAULT_ID"]);
+  const ids = requireIds([
+    "ENVIRONMENT_ID",
+    "AGENT_ID",
+    "AGENT_VERSION",
+    "VAULT_ID",
+    "MEMORY_STORE_ID",
+  ]);
   const agentVersion = values["agent-version"]
     ? Number(values["agent-version"])
     : ids.AGENT_VERSION;
@@ -366,21 +556,56 @@ async function main(): Promise<void> {
   const evidenceDir = resolve(REPO_ROOT, "docs/evidence");
   mkdirSync(evidenceDir, { recursive: true });
 
-  console.log("── phase 4 · triage driver ".padEnd(64, "─"));
+  console.log(`── ${values.label} · triage driver `.padEnd(64, "─"));
   console.log(`  agent          ${ids.AGENT_ID} v${agentVersion} (pinned)`);
+  console.log(`  memory store   ${ids.MEMORY_STORE_ID} (read_write, attached at creation)`);
   console.log(`  tickets        ${tickets.map((t) => t.ticket_id).join(", ")}`);
   console.log(
     `  outcomes       ${graded.size === 0 ? "none — ungraded run" : `${[...graded].join(", ")} (max_iterations ${maxIterations})`}`,
   );
-  console.log(`  budget         ${usd(budget)} hard stop, priced at the Opus ceiling`);
+  console.log(`  budget         ${usd(budget)} hard stop, list_cost where reported`);
   console.log(
     `  no pre-run estimate: SPEC § Cost controls #1 says extrapolate from a\n` +
       `  measured number, not a guess. Ticket 1 is measured, then projected.`,
   );
 
+  const client0 = new Anthropic();
+
+  // --reset-memory is correctness, not convenience. A byte-identical rewrite is
+  // a no-op: it produces no version row and no sha change (memory.md — "Every
+  // non-no-op mutation to a memory produces a new version"), so it is invisible
+  // to both the snapshot diff and the version query. Starting empty forces the
+  // first write to be an `operation: 'created'`, and makes "session A read and
+  // found nothing" a real negative control rather than an assumption.
+  if (values["reset-memory"]) {
+    const deleted = await resetAccounts(client0, ids.MEMORY_STORE_ID);
+    console.log(
+      `  reset          ${deleted.length === 0 ? "store already had no /accounts/*" : `deleted ${deleted.join(", ")}`}`,
+    );
+  }
+
+  // Committed so the "before" state is an artifact, not a claim made afterwards.
+  const beforeRun = await snapshotStore(client0, ids.MEMORY_STORE_ID);
+  const beforePath = resolve(evidenceDir, `${values.label}-memory-before.json`);
+  writeFileSync(
+    beforePath,
+    `${JSON.stringify(
+      [...beforeRun.values()].map(({ path, sha, bytes, content }) => ({
+        path,
+        content_sha256: sha,
+        content_size_bytes: bytes,
+        content,
+      })),
+      null,
+      2,
+    )}\n`,
+  );
+  console.log(`  store before   ${beforeRun.size} memories → ${beforePath}`);
+
   const runs: TicketRun[] = [];
   let spentHi = 0;
   let stoppedForBudget = false;
+  let stoppedForMemory = false;
 
   for (const [i, ticket] of tickets.entries()) {
     console.log(`\n── ${ticket.ticket_id} (${i + 1}/${tickets.length}) `.padEnd(64, "─"));
@@ -395,15 +620,31 @@ async function main(): Promise<void> {
       tracePath: resolve(evidenceDir, `${values.label}-${ticket.ticket_id}.jsonl`),
     });
     runs.push(run);
+    // The DERIVED figure, not `list_cost` — see the capture site and D-047.
+    // Exact for this run shape: the model is pinned and there is no grader.
     spentHi += run.cost.hi;
 
     console.log(
       `  → ${run.outcome}  ${run.decision ? `${run.decision.category}/${run.decision.disposition}` : "(no decision)"}` +
-        `  ${usd(run.cost.lo)}..${usd(run.cost.hi)}`,
+        `  ${usd(run.cost.hi)} derived` +
+        `${run.listCost === null ? "" : `  ·  list_cost ${run.listCost.amount} ${run.listCost.currency} (units unstable, not used)`}`,
     );
 
-    // Measure, then project. The projection uses the ceiling of the bracket, so
-    // it is the number that can actually be exceeded.
+    // CONTAINMENT. The read-back that verification already requires runs between
+    // sessions, so a poisoned or malformed write in session N is caught before
+    // session N+1 is created. Stopping is the point: memory.md:369's threat is
+    // that a later session reads the write as trusted context, and there is no
+    // later session if the driver does not open one.
+    if (run.memory.violations.length > 0 || run.memory.writesOutsideMount.length > 0) {
+      console.error(
+        `\n  !! memory integrity failed on ${ticket.ticket_id}. Stopping before the next ` +
+          `session so nothing reads it back.\n     Inspect the store, then re-run with --reset-memory.`,
+      );
+      stoppedForMemory = true;
+      break;
+    }
+
+    // Measure, then project.
     const remaining = tickets.length - (i + 1);
     if (remaining > 0) {
       const projected = spentHi + (spentHi / (i + 1)) * remaining;
@@ -436,7 +677,16 @@ async function main(): Promise<void> {
             validation_failures: r.validationFailures,
             mcp_calls: r.mcpCalls,
             grader: r.graderResults,
+            list_cost: r.listCost,
             decision: r.decision,
+            memory: {
+              mount_path: r.memory.mountPath,
+              reads: r.memory.reads.map((x) => ({ path: x.path, index: x.index })),
+              writes_outside_mount: r.memory.writesOutsideMount,
+              changed: r.memory.changed,
+              wrote: r.memory.wrote,
+              violations: r.memory.violations,
+            },
           },
         ]),
       ),
@@ -497,7 +747,116 @@ async function main(): Promise<void> {
       invented.length > 0 ? `invented: ${invented.join(", ")}` : (t009?.disposition ?? "(none)"),
     ]);
   }
-  console.log(`\n── phase 4 gates `.padEnd(64, "─"));
+  // ---- Phase 5 · memory gates ----------------------------------------------
+  //
+  // SPEC § Verification assertion 4, restated so it is discriminating. The
+  // assertion's own citation clause is NOT used: it asks that T-010's citations
+  // "reference the prior issue", and the Phase 4 run satisfied that with no
+  // memory store attached at all, because ACC-2004's `known_issues` carries
+  // `duplicate_charge:CHG-88213` through the MCP record. A gate a
+  // no-memory baseline already passes proves nothing about memory.
+
+  // A HANDOFF is a ticket whose account file an EARLIER ticket's session wrote.
+  // Derived from the run rather than hardcoded to T-001/T-010, so the gate is
+  // about the mechanism and not about two ticket ids.
+  const writtenBy = new Map<string, string>();
+  const handoffs: { reader: TicketRun; writer: string; storePath: string }[] = [];
+  for (const r of runs) {
+    const storePath = `/accounts/${r.ticket.account_id}.md`;
+    const writer = writtenBy.get(storePath);
+    if (writer !== undefined) handoffs.push({ reader: r, writer, storePath });
+    if (r.memory.wrote.some((w) => w.path === storePath)) {
+      writtenBy.set(storePath, r.ticket.ticket_id);
+    }
+  }
+
+  const mounts = [...new Set(runs.map((r) => r.memory.mountPath))];
+  const outside = runs.flatMap((r) =>
+    r.memory.writesOutsideMount.map((p) => `${r.ticket.ticket_id}:${p}`),
+  );
+  const tripped = runs.flatMap((r) => r.memory.violations.map((v) => `${r.ticket.ticket_id} ${v}`));
+
+  if (runs.length > 0) {
+    gates.push([
+      "mount_path read off the session resource, never constructed",
+      mounts.length === 1 && mounts[0] !== undefined && mounts[0].startsWith("/mnt/memory/"),
+      mounts.join(", "),
+    ]);
+    gates.push([
+      "no write landed outside the memory mount",
+      outside.length === 0,
+      outside.length === 0 ? "clean" : outside.join(", "),
+    ]);
+    gates.push([
+      "every memory this run changed passes the shape tripwire",
+      tripped.length === 0,
+      tripped.length === 0 ? "clean" : tripped.join(" | "),
+    ]);
+  }
+
+  for (const { reader, writer, storePath } of handoffs) {
+    const w = runs.find((r) => r.ticket.ticket_id === writer) as TicketRun;
+    const version = w.memory.wrote.find((x) => x.path === storePath);
+    const wasAbsent = !beforeRun.has(storePath);
+
+    // P3 — the platform attributes this version to the WRITER'S session id,
+    // minted by this process minutes ago. A file left by an earlier attempt
+    // carries a different session's rows and cannot satisfy it.
+    gates.push([
+      `${writer} wrote ${storePath}, attributed to its own session`,
+      version !== undefined && (!wasAbsent || version.operation === "created"),
+      version === undefined
+        ? "no version attributed to that session"
+        : `${version.operation} by ${w.sessionId}`,
+    ]);
+
+    // P5 — the paired agent.tool_result is the SANDBOX's answer, not the
+    // agent's claim, and its text is compared against the record the host read
+    // out of band through a different endpoint.
+    const fullPath = `${reader.memory.mountPath}${storePath}`;
+    const readBack = reader.memory.reads.find(
+      (x) => x.path === fullPath && (x.result ?? "").includes(`- ${writer} |`),
+    );
+    gates.push([
+      `${reader.ticket.ticket_id} read it back, sandbox returned ${writer}'s record`,
+      readBack !== undefined,
+      readBack === undefined
+        ? `reads: ${reader.memory.reads.map((x) => x.path).join(", ") || "none"}`
+        : `${fullPath} @ event ${readBack.index}`,
+    ]);
+
+    // P6 — the memory-exclusive token. `writer` appears in the memory file and
+    // nowhere else in the reader's world: not in its ticket record, and the
+    // second clause proves not in any tool result either.
+    const decisionText = JSON.stringify(reader.decision ?? {});
+    const mcpText = readEventsJsonl(
+      resolve(evidenceDir, `${values.label}-${reader.ticket.ticket_id}.jsonl`),
+    )
+      .filter((e) => (e as { type?: string }).type === "agent.mcp_tool_result")
+      .map((e) => JSON.stringify(e))
+      .join("\n");
+    gates.push([
+      `${reader.ticket.ticket_id} names ${writer}, which no tool result carries`,
+      decisionText.includes(writer) && !mcpText.includes(writer),
+      `in decision: ${decisionText.includes(writer)} · in mcp results: ${mcpText.includes(writer)}`,
+    ]);
+  }
+
+  // The injection probe. An injection can influence WHETHER a line appears; the
+  // fixed literal is what stops it influencing what the line says.
+  const injectionRuns = runs.filter((r) => r.decision?.suspected_injection === true);
+  for (const r of injectionRuns) {
+    const lines = r.memory.wrote.flatMap((w) =>
+      w.content.split("\n").filter((l) => l.startsWith(`- ${r.ticket.ticket_id} |`)),
+    );
+    gates.push([
+      `${r.ticket.ticket_id} recorded only the fixed literal, or nothing`,
+      lines.every((l) => l.endsWith(`| ${INJECTION_MEMORY_LITERAL}`)),
+      lines.length === 0 ? "wrote nothing" : `${lines.length} line(s): ${lines.join(" / ")}`,
+    ]);
+  }
+
+  console.log(`\n── ${values.label} gates `.padEnd(64, "─"));
   for (const [label, pass, detail] of gates) {
     console.log(`  ${pass ? "✓" : "✗"} ${label.padEnd(52)}${detail}`);
   }
@@ -546,11 +905,28 @@ async function main(): Promise<void> {
     label: `${runs.length} ticket${runs.length === 1 ? "" : "s"}`,
   });
 
+  // Reported verbatim so the artifact records what the platform actually said,
+  // and NOT summed — summing implies a unit this field has not held stably.
+  // D-034 recommended treating it as authoritative; D-047 records the
+  // measurement that withdrew that. The derived figure above is the number.
+  const reported = runs.filter((r) => r.listCost !== null);
+  if (reported.length > 0) {
+    console.log(`\n  session.usage.list_cost, verbatim (NOT used — units unstable, D-047)`);
+    for (const r of reported) {
+      console.log(
+        `    ${r.ticket.ticket_id}  amount ${r.listCost?.amount} ${r.listCost?.currency}` +
+          `   vs ${usd(r.cost.hi)} derived`,
+      );
+    }
+  }
+
   console.log(`\n  decisions written  ${decisionsPath}`);
   console.log(`  traces written     ${evidenceDir}/${values.label}-T-0*.jsonl`);
+  console.log(`  store before       ${beforePath}`);
 
-  const passed = gates.every(([, p]) => p) && !stoppedForBudget;
-  console.log(`\n  ${passed ? "PHASE 4 GATES MET" : "PHASE 4 GATES NOT MET"}`);
+  const passed = gates.every(([, p]) => p) && !stoppedForBudget && !stoppedForMemory;
+  const banner = values.label.toUpperCase();
+  console.log(`\n  ${passed ? `${banner} GATES MET` : `${banner} GATES NOT MET`}`);
   if (!passed) process.exitCode = 1;
 }
 

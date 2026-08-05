@@ -145,11 +145,25 @@ fi
 # unsubstituted placeholder is the failure this catches — it would otherwise
 # surface as a skill that never loads, with no error anywhere.
 skill_ids="$(jq -r '(.skills // []) | map(.skill_id // "UNSET") | join(",")' <<< "$agent_json")"
+skill_versions="$(jq -r '(.skills // []) | map(.version // "UNSET") | join(",")' <<< "$agent_json")"
 custom_tools="$(jq -r '
   (.tools // []) | map(select(.type == "custom")) | map(.name) | join(",")
 ' <<< "$agent_json")"
 echo "skills:                        ${skill_ids:-none}"
+echo "skill versions:                ${skill_versions:-none}"
 echo "custom tools:                  ${custom_tools:-none}"
+
+# Phase 5. The applied version must be the one .env.local holds, or the agent is
+# still pinned to the PREVIOUS skill and the whole live run measures the old
+# SKILL.md while looking like a model failure. Skills are immutable, so an edited
+# SKILL.md that was never given a new version fails here rather than five dollars
+# later. Sequence is `pnpm provision --new-skill-version` and then this script.
+if [ -n "${TRIAGE_SKILL_VERSION:-}" ] && [ "$skill_versions" != "$TRIAGE_SKILL_VERSION" ]; then
+  echo "error: agent is pinned to skill version '${skill_versions:-none}'," >&2
+  echo "       but .env.local holds '$TRIAGE_SKILL_VERSION'." >&2
+  echo "       Run 'pnpm provision --new-skill-version' before this script." >&2
+  exit 1
+fi
 
 if grep -q '\${TRIAGE_SKILL_ID}' agent/agent.yaml; then
   case "$skill_ids" in

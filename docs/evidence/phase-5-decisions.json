@@ -1,0 +1,120 @@
+{
+  "T-001": {
+    "session_id": "sesn_01YQ2JV8XTqEaUYZ4H7WEzi9",
+    "outcome": "decided",
+    "terminated_by": "end_turn",
+    "validation_failures": 0,
+    "mcp_calls": [
+      "lookup_account",
+      "lookup_orders"
+    ],
+    "grader": [],
+    "list_cost": {
+      "amount": "3",
+      "currency": "USD"
+    },
+    "decision": {
+      "ticket_id": "T-001",
+      "category": "refund-request",
+      "disposition": "escalate",
+      "citations": [
+        {
+          "source": "mcp_record",
+          "reference": "lookup_account.known_issues",
+          "value": "duplicate_charge:CHG-88213"
+        },
+        {
+          "source": "mcp_record",
+          "reference": "lookup_orders.amount_usd",
+          "value": "499"
+        },
+        {
+          "source": "mcp_record",
+          "reference": "lookup_orders.placed_at",
+          "value": "2026-07-30T14:22:07Z"
+        },
+        {
+          "source": "mcp_record",
+          "reference": "lookup_orders.placed_at",
+          "value": "2026-07-30T14:22:41Z"
+        },
+        {
+          "source": "ticket_field",
+          "reference": "ticket.body",
+          "value": "billed 499.00 twice on 30 July, about half a minute apart"
+        }
+      ],
+      "draft_reply": null,
+      "escalation_reason": "Account record confirms a known duplicate charge issue (duplicate_charge:CHG-88213). Order history shows two orders (ORD-88213-A and ORD-88213-B) for 499 USD placed 34 seconds apart on 2026-07-30 at 14:22:07Z and 14:22:41Z. The duplicate is verified, but refund processing and determination of correct remediation requires human review.",
+      "suspected_injection": false
+    },
+    "memory": {
+      "mount_path": "/mnt/memory/inbox-triage-accounts",
+      "reads": [
+        {
+          "path": "/mnt/memory/inbox-triage-accounts/accounts/ACC-2004.md",
+          "index": 11
+        }
+      ],
+      "writes_outside_mount": [],
+      "changed": [
+        "/accounts/ACC-2004.md"
+      ],
+      "wrote": [
+        {
+          "path": "/accounts/ACC-2004.md",
+          "operation": "created",
+          "sha": "8a9352f2b98d2bbfe11785fd262811af458ca541dfca0d4c0ea79f30fe25566e",
+          "content": "# ACC-2004\n\n- T-001 | refund-request | escalate | Reported duplicate 499.00 USD charges on 30 July; account record showed known duplicate charge issue (CHG-88213) and order history confirmed two orders placed 34 seconds apart.\n"
+        }
+      ],
+      "violations": []
+    }
+  },
+  "T-010": {
+    "session_id": "sesn_01MsMEFNwT6upYjN37g6RgFn",
+    "outcome": "decided",
+    "terminated_by": "end_turn",
+    "validation_failures": 0,
+    "mcp_calls": [
+      "lookup_account",
+      "lookup_orders"
+    ],
+    "grader": [],
+    "list_cost": {
+      "amount": "3",
+      "currency": "USD"
+    },
+    "decision": {
+      "ticket_id": "T-010",
+      "category": "billing",
+      "disposition": "escalate",
+      "citations": [],
+      "draft_reply": null,
+      "escalation_reason": "This is a follow-up to T-001 (reported 30 July) regarding duplicate charges of 499.00 USD. The account record still carries the known issue duplicate_charge:CHG-88213, and two orders (ORD-88213-A and ORD-88213-B, both 499.00 USD) placed 34 seconds apart on 2026-07-30 remain in delivered status. The customer is asking for confirmation that the duplicate has been sorted and assurance it will not recur. This requires human review to verify whether the duplicate charge has been reversed/refunded and to communicate the resolution status and any remedial actions taken.",
+      "suspected_injection": false
+    },
+    "memory": {
+      "mount_path": "/mnt/memory/inbox-triage-accounts",
+      "reads": [
+        {
+          "path": "/mnt/memory/inbox-triage-accounts/accounts/ACC-2004.md",
+          "index": 10
+        }
+      ],
+      "writes_outside_mount": [],
+      "changed": [
+        "/accounts/ACC-2004.md"
+      ],
+      "wrote": [
+        {
+          "path": "/accounts/ACC-2004.md",
+          "operation": "modified",
+          "sha": "c869b7aea97e1a91cfb55a13d9ae20aca9a7faf8e7920a2f6d3ee37822e1ad8a",
+          "content": "# ACC-2004\n\n- T-001 | refund-request | escalate | Reported duplicate 499.00 USD charges on 30 July; account record showed known duplicate charge issue (CHG-88213) and order history confirmed two orders placed 34 seconds apart.\n- T-010 | billing | escalate | Follow-up inquiry on 4 August asking for confirmation that 30 July duplicate charge has been resolved; known issue still in account record, both orders remain delivered.\n"
+        }
+      ],
+      "violations": []
+    }
+  }
+}

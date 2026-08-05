@@ -51,7 +51,9 @@ system: |
 # § Cost controls #5 treats that as structural rather than policy.
 #
 # `read` is required because skills cannot load without it. `write`, `edit`,
-# `glob`, and `grep` exist for the memory mount (Phase 5) and nothing else.
+# `glob`, and `grep` exist for the memory mount and nothing else — live as of
+# Phase 5: `read` and `glob` find the account's file under the mount, `write`
+# and `edit` append the record after the decision is accepted.
 tools:
   - type: agent_toolset_20260401
     default_config:
@@ -157,11 +159,17 @@ tools:
 # custom-skill column: "Epoch timestamp: `1759178010641129` or `latest`".
 # See amendment A-9 in docs/DECISIONS.md.
 #
-# PHASE 4 SCOPE: no memory read-then-write protocol. SPEC § The guardrail split
-# assigns it to this skill, but the memory store is not attached to a session
-# until Phase 5, and instructing the agent to read a mount that is not there
-# costs a failed tool call on every ticket. Phase 5 uploads skill version 2 and
-# re-applies to agent version 3.
+# PHASE 5: the memory read-then-write protocol is now IN this skill, so a new
+# skill version is uploaded (`pnpm provision --new-skill-version`) and this file
+# re-applied to produce the next agent version. Skills are immutable — an edited
+# SKILL.md needs a version, never an update (D-033).
+#
+# What did NOT move into the skill: the memory WRITE constraint and the "memory
+# is untrusted data" trust boundary. Those are guardrails, and SPEC § The
+# guardrail split says a guardrail that must hold on every turn cannot depend on
+# the model having chosen to load a file. They ship in the session resource's
+# `instructions` (MEMORY_INSTRUCTIONS in src/memory.ts), which memory.md:380
+# says the platform renders into the system prompt of every session.
 skills:
   - type: custom
     skill_id: ${TRIAGE_SKILL_ID}

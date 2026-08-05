@@ -231,6 +231,30 @@ describe("unsupportedClaims — ship-gate assertion 3, second clause", () => {
       unsupportedClaims({ ...base, disposition: "escalate", draft_reply: null, citations: [], escalation_reason: "x" }),
     ).toEqual([]);
   });
+
+  it("does NOT flag a prior ticket id named because memory informed the decision", () => {
+    // Phase 5 regression, and the same failure D-040 records wearing a new
+    // costume. SKILL.md now tells the agent to name an earlier ticket's id when
+    // account memory bore on this one, so "T-001" legitimately appears in a
+    // draft. Before the ticket form joined the strip list, the number scan
+    // extracted `001` from it and reported a phantom uncited figure on entirely
+    // correct work — and a checker that fires on correct work buries the real
+    // finding beside it.
+    //
+    // A ticket id is a pointer to a prior ticket, not a promise about an order
+    // or an amount, so it needs no citation of its own — which is why it is
+    // stripped before numbers are read but is NOT added to the id-claim check.
+    expect(
+      unsupportedClaims({
+        ...base,
+        ticket_id: "T-010",
+        draft_reply: "Following up on T-001, the duplicate charge is with our billing team.",
+        citations: [
+          { source: "mcp_record", reference: "lookup_account.known_issues", value: "duplicate_charge:CHG-88213" },
+        ],
+      }),
+    ).toEqual([]);
+  });
 });
 
 describe("inventedAccountFields — the T-009 supporting assertion", () => {
