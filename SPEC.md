@@ -390,7 +390,14 @@ Build on `claude-haiku-4-5`. If T-006 or T-008 fail rubric criterion 3 or 5 acro
 
 ### Cost controls
 
-**Hard constraint: $10 of API credit, not the $20 the blueprint assumed.** The blueprint's own estimate topped out at $15, so the budget is below its upper bound and cost discipline is a build requirement, not a nicety. The dominant cost is the grader: ten tickets times up to three passes is up to thirty evaluations per full run, and a build takes five to eight runs, not one.
+**Constraint, as of 2026-08-05: $10.38 of API credit, and the workspace spend limit has been REMOVED by the operator.** The dominant cost is the grader: ten tickets times up to three passes is up to thirty evaluations per full run, and a build takes five to eight runs, not one.
+
+*Amended 2026-08-05 (Phase 6 boundary).* The original text read *"Hard constraint: $10 of API credit, not the $20 the blueprint assumed"*, and § Environment state paired it with a **$5 workspace hard limit** that made overspend structurally impossible — requests were blocked at the cap, and a workspace-scoped key could not reach the rest of the balance. **That guarantee no longer exists.** The remaining bound is the organization credit balance, and the only per-run protection is `run.ts`'s `--budget` projection stop and the per-ticket wall clock. Both are discipline rather than physics: a forgotten flag or a bad projection now costs real money instead of being refused. Two consequences, and they are the reason this amendment is a paragraph rather than a number swap:
+
+- **`--budget` is now load-bearing and must be passed explicitly on every live run**, not left to its default. Its default is raised to `2.50` on measurement, not taste: the Phase 6 ten-ticket graded run finished at **$1.2310** ceiling, but its mid-run projection peaked at **$1.7049**, which the old `1.50` default would have stopped for no good reason.
+- **Spend is still derived, never read.** No platform figure is trustworthy for this — `list_cost` moved units between two runs (D-047). Every balance number in this repo is priced from `session.usage` token counts at the pinned model's rates. The Console's own workspace usage view is the independent cross-check and it has not yet been taken.
+
+Removing the cap widens what the build can attempt — SPEC § Model escalation path becomes affordable, and so does the prompt counterweight D-053 leaves open. It does not make either of them correct: both fire on measured failures, and having the money to run them is not evidence that they are needed.
 
 Seven controls, in order of leverage:
 
@@ -404,7 +411,7 @@ Seven controls, in order of leverage:
 6. Per-ticket wall clock, so a stuck session cannot bill indefinitely.
 7. **Console spend alert at $5, not $10.** An alert at $10 against a $10 balance fires after the money is gone.
 
-If the balance drops below roughly $3 with gates unmet, stop and decide deliberately between a top-up and the Tier B fallback. Do not discover this mid-run.
+If the balance drops below roughly $3 with gates unmet, stop and decide deliberately between a top-up and the Tier B fallback. Do not discover this mid-run. **This rule survives the cap's removal and matters more without it:** the $5 limit used to enforce the stop by refusing requests, and now nothing does.
 
 **The escalation path is expensive under this budget.** If Haiku fails T-006 or T-008 and the model escalates a tier, the re-run costs roughly three times as much. Frugality in phases 1 through 5 is what buys the option to escalate in phase 6.
 
@@ -490,8 +497,8 @@ Supporting assertions on the design-intent tickets:
 | Node / pnpm | v24.14.1 / v10.33.2 |
 | Memory stores, vaults, skills | Confirmed live on the account via Console |
 | Managed Agents | Confirmed live. `GET /v1/environments` + `managed-agents-2026-04-01` returns HTTP 200 |
-| Workspace | Dedicated workspace `inbox-triage-agent`, `wrkspc_01LuDSz1dfWPHtWuytSwaLxn`, with a **$5 hard spend limit** |
-| API key | Workspace-scoped, verified HTTP 200 on `/v1/models` and `/v1/environments`. Lives only in `.env.local`. Keys cannot move between workspaces, so this key is structurally capped at $5 |
+| Workspace | Dedicated workspace `inbox-triage-agent`, `wrkspc_01LuDSz1dfWPHtWuytSwaLxn`. Carried a **$5 hard spend limit** through Phase 6; **the limit was removed by the operator on 2026-08-05**, so the bound is now the organization credit balance ($10.38 at that date) |
+| API key | Workspace-scoped, verified HTTP 200 on `/v1/models` and `/v1/environments`. Lives only in `.env.local`. Keys cannot move between workspaces, so the key still cannot reach another workspace's spend — but with the workspace limit lifted it is **no longer structurally capped**, and `--budget` is what bounds a run |
 | `.env.local` | Git-ignored, verified uncommittable via `git check-ignore` |
 
 ### Open before Phase 1
@@ -501,7 +508,7 @@ Supporting assertions on the design-intent tickets:
 - ~~API key created and working.~~ **Done.** `GET /v1/models` returned 200.
 - ~~`vercel login`.~~ **Done.** Authenticated as `sheharyarr-ahmed`.
 - ~~`ant auth login`.~~ **Not required.** The `--api-key` flag plus dotenv covers both CLI and SDK.
-- ~~Set the Console spend alert to $5.~~ **Done, and stronger than planned.** A dedicated workspace carries a **$5 hard spend limit**, not an alert. Requests are blocked at the cap rather than merely reported. Because API keys are permanently bound to the workspace they are created in, the project key cannot spend beyond $5 and cannot drain the rest of the balance.
+- ~~Set the Console spend alert to $5.~~ **Done 2026-08-02, and stronger than planned — then deliberately undone.** A dedicated workspace carried a **$5 hard spend limit**, not an alert: requests were blocked at the cap, and because API keys are permanently bound to the workspace they are created in, the project key could not spend beyond $5 or drain the rest of the balance. **The operator removed that limit on 2026-08-05** so Phase 7 and Phase 8 would not be bounded by it. The structural guarantee is gone; see § Cost controls for what replaces it and what that costs.
 - ~~`ANTHROPIC_WORKSPACE_ID`.~~ **Done.** `wrkspc_01LuDSz1dfWPHtWuytSwaLxn`.
 - ~~Pull Overview, Quickstart, Sessions, Events and Streaming, Define Outcomes, Memory, Vaults, MCP Connector, and Skills into `docs/reference/`.~~ **Done 2026-08-02.** Twelve pages pulled from `platform.claude.com` (`docs.claude.com` 301-redirects there; the path prefix is `/docs/en/…`). The three beyond this list — `agent-setup`, `tools`, `environments` — are the surfaces Phase 2 writes `agent.yaml` and `environment.yaml` against. Provenance, MDX caveat, and the SPEC contradiction are recorded in `docs/reference/README.md`. **Phase 0 is closed.**
 - ~~Revoke the superseded API key from the old workspace if not already done.~~ **Done, confirmed by the operator 2026-08-05.** The superseded key is revoked; the build runs on the workspace-scoped key in `.env.local`, re-verified the same day against all three endpoint families it has to reach — `GET /v1/models` **200**, `GET /v1/environments` with `managed-agents-2026-04-01` **200**, `GET /v1/memory_stores` with `agent-memory-2026-07-22` **200** — and it resolves this build's own agent at version 5. **No item in this section remains open.**

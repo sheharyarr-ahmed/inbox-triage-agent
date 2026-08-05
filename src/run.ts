@@ -50,7 +50,7 @@
  *     --tickets T-006,T-008     subset to run          (default: all ten)
  *     --outcome T-006[,…]|all   deliver these by user.define_outcome + rubric
  *     --max-iterations N        grader cap             (default: 2)
- *     --budget N                dollars, hard stop     (default: 1.50)
+ *     --budget N                dollars, hard stop     (default: 2.50)
  *     --agent-version N         override the pin       (default: .env.local)
  *     --label NAME              evidence file prefix   (default: phase-4)
  *     --reset-memory            delete /accounts/* before the run
@@ -603,7 +603,14 @@ async function main(): Promise<void> {
       tickets: { type: "string" },
       outcome: { type: "string" },
       "max-iterations": { type: "string", default: "2" },
-      budget: { type: "string", default: "1.50" },
+      // 2.50 on measurement, not taste. The workspace's $5 hard limit was
+      // removed on 2026-08-05, so this projection stop is now the only thing
+      // bounding a run — and the old 1.50 was measurably too low: the Phase 6
+      // ten-ticket graded run FINISHED at $1.2310 ceiling but its mid-run
+      // projection peaked at $1.7049, so 1.50 would have stopped a healthy run.
+      // Pass --budget explicitly on every live run regardless; a default is a
+      // backstop, not a decision.
+      budget: { type: "string", default: "2.50" },
       "agent-version": { type: "string" },
       label: { type: "string", default: "phase-4" },
       "reset-memory": { type: "boolean", default: false },
