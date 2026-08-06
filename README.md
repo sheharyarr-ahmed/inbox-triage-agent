@@ -56,7 +56,7 @@ cp .env.example .env.local        # then fill it in
 # .git/hooks/ is never cloned; this one line is what makes the hook travel.
 git config core.hooksPath .githooks
 
-pnpm -s test                      # 198 tests, offline, no network, no API key needed
+pnpm -s test                      # 213 tests, offline, no network, no API key needed
 ```
 
 The suite is **hermetic**: it runs from a clean clone with no `.env.local`
@@ -102,7 +102,7 @@ a decision.
 agent/          agent.yaml, environment.yaml, rubric.md, skills/triage/SKILL.md
 mcp-server/     two tools, Zod in and out, typed not-found, deployed to Vercel
 src/            deploy · run · events · grader · decision · assertions · memory · cost
-tests/          8 suites, 198 tests, all offline
+tests/          8 suites, 213 tests, all offline
 data/           the ten seeded tickets
 docs/           SPEC-adjacent documentation and every committed trace
 ```
@@ -115,7 +115,7 @@ docs/           SPEC-adjacent documentation and every committed trace
 |---|---|
 | [`SPEC.md`](SPEC.md) | The contract: goal, runtime configuration, verification, cost controls, phase ledger |
 | [`docs/AGENT_DESIGN.md`](docs/AGENT_DESIGN.md) | How it is put together, and the five decisions that determine its behaviour |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | 65 entries: every architectural choice with the alternatives considered |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | 68 entries: every architectural choice with the alternatives considered |
 | [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) | What it does not do and what it cannot prove |
 | [`docs/EVIDENCE.md`](docs/EVIDENCE.md) | Ship-gate proof from committed artifacts |
 | [`docs/reference/`](docs/reference/) | The Anthropic documentation snapshot this build was written against. Where these contradict training data, **these win** |

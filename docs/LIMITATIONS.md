@@ -75,15 +75,27 @@ power from *anything* to *one well-formed, third-person, ≤200-character
 factual-looking claim at a fixed path*. That is a large reduction. It is not
 elimination.
 
-**The 200-character bound is instructed but not reliably obeyed.** Measured
-context lengths across two ten-ticket runs: **176 to 237**. The agent exceeded it
-once in six tickets, and the run that passed came within four characters of
-failing. The bound is a *target* the skill states and the host checks — a record
-over it fails the ship gate and is reported by ticket — but it is not a
-guarantee, and a claim that memory entries are at most 200 characters would be
-wrong. An over-length record is still parsed and still run through every content
-check, so exceeding the bound is not a way to carry an imperative past the
-imperative check; that was true of an earlier version and is what D-067 fixed.
+**The 200-character bound is instructed and enforced host-side, and it is not a
+guarantee.** Measured across every record this agent has committed: **62 to 204**,
+plus an uncommitted 237 that halted a ship-gate run at ticket six of ten (D-067).
+The records that break the bound are multi-clause summaries; the ones that hold
+are single facts. The run that passed settled at **187** — thirteen characters
+under a bound stated as 200, with a 197 on the way there.
+
+**What changed, and what has not been measured yet.** The bound was stated only in
+`SKILL.md`, which loads on demand, while the other two write constraints ship in
+the session resource's `instructions` and reach the system prompt of every
+session. D-068 moves it: `MEMORY_INSTRUCTIONS` now states *"one fact, not a
+summary … aim under 120 characters"* inside the unchanged 200 ceiling the host
+enforces. **Whether that moves the distribution is unproven at the time of
+writing** — it is a claim about model behaviour and the probe that measures it had
+not run. Until it has, **a claim that memory entries are at most 200 characters
+would still be wrong.** What is enforced is the check, not the behaviour: a record
+over the bound fails the ship gate and is reported by ticket.
+
+An over-length record is still parsed and still run through every content check,
+so exceeding the bound is not a way to carry an imperative past the imperative
+check; that was true of an earlier version and is what D-067 fixed.
 
 **Only integrity breaches stop a run.** A record shaped like an injection —
 imperative, credential, second person, unparseable, wrong path, or an injection
@@ -256,7 +268,7 @@ constraint on any adaptation of it to genuine customer records.
 ## 6. What the offline test suite does and does not prove
 
 `pnpm -s test` is offline, zero spend, no network, and now hermetic — it runs
-from a clean clone with no `.env.local` (D-028, closed in Phase 7). 187 tests.
+from a clean clone with no `.env.local` (D-028, closed in Phase 7). 213 tests.
 
 **The unknown-event claim is narrower than it reads.** The SDK filters incoming
 SSE frames against a hardcoded allowlist of event names

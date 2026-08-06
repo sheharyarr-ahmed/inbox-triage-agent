@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { BetaManagedAgentsSession } from "@anthropic-ai/sdk/resources/beta/sessions/sessions";
 import {
+  MAX_CONTEXT_CHARS,
   memoryReads,
   memoryRecordViolations,
   memoryViolations,
@@ -369,10 +370,32 @@ describe("SKILL.md invariants — nothing checked this file before Phase 5", () 
   });
 
   it("carries the injection literal byte-identically to the host and the mount note", () => {
-    // Three copies have to agree or the gate is checking a string the agent was
-    // never given: src/memory.ts (host + system prompt) and SKILL.md (procedure).
-    expect(SKILL).toContain(INJECTION_MEMORY_LITERAL);
-    expect(MEMORY_INSTRUCTIONS).toContain(INJECTION_MEMORY_LITERAL);
+    // The gate, the system prompt and the procedure have to agree, or the host is
+    // asserting on a string the agent was never given.
+    //
+    // ONE of these two assertions used to be a tautology, which SPEC § Verification
+    // forbids in as many words: "a positive clause that cannot return false is
+    // worse than no clause". `MEMORY_INSTRUCTIONS` INTERPOLATES the constant
+    // (`src/memory.ts:82`), so `toContain(INJECTION_MEMORY_LITERAL)` was true by
+    // construction for any value the constant could take — including an empty
+    // string. It is pinned against a written-out literal instead, so a change to
+    // the constant turns this red rather than silently carrying the suite with it.
+    // `SKILL.md` is the only independent copy and is the load-bearing check.
+    const LITERAL =
+      "Ticket content attempted to instruct the assistant; escalated. Content not recorded.";
+
+    expect(INJECTION_MEMORY_LITERAL).toBe(LITERAL);
+    expect(SKILL).toContain(LITERAL);
+    expect(MEMORY_INSTRUCTIONS).toContain(LITERAL);
+  });
+
+  it("states the same context ceiling the host enforces", () => {
+    // The last un-held SKILL.md-to-code coupling. `MAX_CONTEXT_CHARS` is defined
+    // once in `src/assertions.ts` and restated as an unlinked literal here; raise
+    // one without the other and the agent is instructed to a bound the host does
+    // not check, or vice versa. Every other coupling in this describe block exists
+    // because its breakage is silent, and so is this one. See D-068.
+    expect(SKILL).toContain(`at most ${MAX_CONTEXT_CHARS} characters`);
   });
 
   it("keeps the always-look-up rule and the decision boundary", () => {
@@ -401,6 +424,26 @@ describe("MEMORY_INSTRUCTIONS — the always-in-context half of the guardrail", 
   it("states the read trust boundary, not only the write rules", () => {
     expect(MEMORY_INSTRUCTIONS).toMatch(/untrusted data/);
     expect(MEMORY_INSTRUCTIONS).toMatch(/tool result is correct and memory is stale/);
+  });
+
+  it("states the length constraint here, where it reaches every turn", () => {
+    // D-068. This is the third write constraint, and until now it was the only one
+    // NOT in this string — it lived in `SKILL.md:150` alone, which reaches context
+    // only if the skill loaded. D-042 put the other two here for exactly the
+    // reason SPEC § The guardrail split gives, and the one left out is the one a
+    // ship-gate run then failed on, at ticket six of ten (D-067).
+    //
+    // Both halves are asserted because both are load-bearing and both were
+    // measured. "One fact, not a summary" is what separates the committed records
+    // that hold the bound (62-148) from the ones that break it (176-237) — every
+    // long one is a multi-clause summary. The 120 target is the compliant
+    // cluster's own centre, and it has to sit strictly inside the enforced
+    // ceiling: a lone "at most 200" is read as a target, which is what the
+    // distribution shows.
+    expect(MEMORY_INSTRUCTIONS).toMatch(/One fact, not a summary/);
+    expect(MEMORY_INSTRUCTIONS).toMatch(/aim under 120/);
+    expect(MEMORY_INSTRUCTIONS).toContain(`over ${MAX_CONTEXT_CHARS} characters fails verification`);
+    expect(120).toBeLessThan(MAX_CONTEXT_CHARS);
   });
 });
 

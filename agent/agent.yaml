@@ -176,10 +176,29 @@ skills:
     version: "${TRIAGE_SKILL_VERSION}"
 
 # No auth here by design. mcp_servers accepts {type, name, url} only; the bearer
-# token lives in a vault as a static_bearer credential and is attached per
-# session via vault_ids, then injected by an Anthropic-side proxy after the
-# request leaves the sandbox. The sandbox never holds the token, so prompt
-# injection in a ticket cannot exfiltrate it (SPEC § MCP server).
+# token lives in a vault as a static_bearer credential, is attached per session
+# via vault_ids, and is "injected automatically" when the agent connects to that
+# URL at session runtime (vaults.md:129). Values are write-only and never
+# returned in API responses (vaults.md:132).
+#
+# CORRECTED 2026-08-06 (A-22, ruled and applied to SPEC.md; this file was the last
+# artifact still carrying the withdrawn wording). It used to say the token was
+# "injected by an Anthropic-side PROXY after the request leaves the sandbox" and
+# that "the sandbox never holds the token, so prompt injection in a ticket cannot
+# exfiltrate it". Neither is sourceable. `proxy` returns ZERO hits across all
+# eighteen pages in docs/reference/. And the never-sees-it guarantee
+# (vaults.md:130, :715) is written about `environment_variable` credentials, not
+# the `static_bearer` this build uses — for which the docs describe no injection
+# point at all. The irony is worth keeping: the type carrying the explicit
+# guarantee is the one that DOES put a placeholder inside the sandbox.
+#
+# The replacement is stronger and needs no undocumented mechanism: the tools block
+# above opts in five file tools by allowlist, so this agent has no bash, no
+# web_search and no web_fetch. It has no shell to read an environment from and no
+# outbound channel to send one to. Exfiltration is bounded by what the agent can
+# DO, not only by what it can see — and that is verifiable from this file today.
+# Anything stronger needs a sandbox-side attempt to read the token, which this
+# build has not made. See SPEC § MCP server and docs/LIMITATIONS.md § 2.
 mcp_servers:
   - type: url
     name: support-records

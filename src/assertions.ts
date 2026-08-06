@@ -187,8 +187,18 @@ void _dispositionsExhaustive;
 const MEMORY_PATH = /^\/accounts\/ACC-\d{4}\.md$/;
 const MEMORY_HEADING = /^# ACC-\d{4}$/;
 
-/** `SKILL.md:150`: the context is "at most 200 characters". */
-const MAX_CONTEXT_CHARS = 200;
+/**
+ * `SKILL.md:150`: the context is "at most 200 characters".
+ *
+ * Exported so a test can hold the coupling. The number is defined here and
+ * enforced here, but it is *instructed* in two other places — `SKILL.md:150`
+ * states this ceiling and `MEMORY_INSTRUCTIONS` states a 120 target inside it —
+ * and nothing tied the three together. Every other `SKILL.md`-to-code coupling
+ * has an invariant in `tests/memory.test.ts` (mount slug, frontmatter name,
+ * outputs path, injection literal); this one did not, so the enforced bound and
+ * the instructed bound could drift in silence. See D-068.
+ */
+export const MAX_CONTEXT_CHARS = 200;
 
 const MEMORY_LINE = new RegExp(
   `^- (T-\\d{3}) \\| (${CATEGORIES.join("|")}) \\| (${DISPOSITIONS.join("|")}) \\| (.{1,${MAX_CONTEXT_CHARS}})$`,

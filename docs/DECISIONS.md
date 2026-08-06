@@ -2038,6 +2038,158 @@ run-level negative control held on every evaluation. The build stays on
 it outright: *"having the money to run them is not evidence that they are
 needed."*
 
+### D-068 · The length bound was the one write constraint left out of the always-in-context string
+
+**D-067 diagnosed the threshold and left the instruction where it was.** This
+entry moves it, for no skill version and no agent version, and records the
+measurement that sizes it.
+
+**The finding.** `MEMORY_INSTRUCTIONS` never stated the bound. `src/memory.ts`
+said only *"one short third-person sentence of context in your own words."* The
+number lived in exactly one place the model could see: `SKILL.md:150`.
+
+That is the wrong place by this build's own rule, written directly above the
+constant since Phase 5 — SPEC § The guardrail split: *"a guardrail that must hold
+on every turn cannot depend on the model having chosen to load a file … So the
+write constraint and the read trust boundary live here."* **D-042 moved two of
+the three write constraints into that string — no ticket text, and the injection
+literal. The length bound stayed in the skill, and it is the one that failed.**
+`docs/LIMITATIONS.md` § 3 states the failure mode in general terms; D-067 is it
+happening in particular.
+
+**The measurement, taken for $0 from committed artifacts.** Every memory context
+field across all three committed runs, `phase-5-*` and `phase-6-decisions.json`:
+
+| chars | shape |
+|---|---|
+| 204 · 197 · 187 · 176 · 177 · 171 · 165 | multi-clause summaries — T-002, T-003, T-006 |
+| 148 · 138 · 128 · 115 · 114 · 108 · 103 · 84 · 62 | single facts — T-001, T-004, T-005, T-007, T-008, T-009, T-010 |
+
+Range 62–204 committed, plus the uncommitted 237 from attempt 3. **The split is
+not length, it is how many things the sentence says**: every record that breaks
+the bound is a summary, and every one that holds is one fact. The compliant group
+centres at 110–120.
+
+So the instruction states both halves — *"One fact, not a summary of the ticket:
+aim under 120 characters, and a record over 200 characters fails verification."*
+The target is the compliant cluster's own centre, derived rather than chosen; the
+ceiling is unchanged and is still what `assertions.ts:191` enforces. **A lone "at
+most 200" is read as a target, which is exactly what the distribution shows** —
+the mode sits at 187, thirteen characters under the bound.
+
+**Considered, with prices, because the operator ruled on the choice:**
+
+| | agent version | skill version | spend |
+|---|---|---|---|
+| **(a) `MEMORY_INSTRUCTIONS`** — taken | **v5, unchanged** | **none** | probe ~$0.10 + gate ~$1.55 |
+| (b) `SKILL.md:150` — the obvious route | v5 → v6 | +1 | probe ~$0.46 *graded, to prove v6* + gate ~$1.55 |
+| (c) both | v5 → v6 | +1 | as (b) |
+| (d) accept the red gate | none | none | still ~$1.55 for a complete run, gate never green |
+
+Chose (a). Three reasons beyond the $0.35.
+
+1. **It is the correct home on this build's own stated principle**, not merely the
+   cheap one. (b) fixes the number while leaving the constraint in the file that
+   loads contingently — the root cause rather than the symptom.
+2. **The gate runs on v5**, the version that produced every committed artifact and
+   scored T-006 and T-008 5/5 at iteration 0 on both Phase 6 runs. **A-14's
+   surviving argument disappears rather than being mitigated.** Its two limbs
+   separate: the value limb — *"durability against a caller that does not
+   exist"* — does not transfer, because this buys the only thing between the build
+   and a green gate; the risk limb — *"making the ship-gate run the first outing of
+   an unproven agent version"* — is version-agnostic and does transfer, and (a)
+   retires it outright because there is no new version. A-14's precedent also
+   points here on the merits: the operator has already ruled once that a memory
+   write constraint belongs in `instructions` and is not worth an agent version.
+3. **It is revertible without minting anything.** If the probe shows the
+   distribution did not move, the string changes again for another ~$0.10. (b)
+   becomes justified on a **second** measured failure — a measured escalation,
+   which is the discipline SPEC § Model escalation path uses.
+
+**Two numbers, and they do not contradict.** `SKILL.md:150` keeps "at most 200" as
+the ceiling; `MEMORY_INSTRUCTIONS` states a 120 target inside it. A target inside
+a ceiling is coherent, and it is the shape the data already had.
+
+**(d) was ruled not a pass, and not on SPEC's letter.** The format check is **not**
+one of SPEC § Verification's six conditions, so a complete v5 run could satisfy
+1–5 while the driver printed FAIL. It fails on three other grounds: D-067 already
+ruled *"the gate is not green until the agent stops writing long lines"*;
+downgrading a check after it bites is the goalpost move D-040, D-051 and D-063
+exist to prevent; and it is not even cheaper, because attempt 3's "15 of 17" came
+from a **six-ticket** run and any complete figure still costs a full run.
+
+**The memory gate had never been rehearsed offline, and it is the gate that
+failed.** `tests/assertions.test.ts` replayed nine of the driver's gates against
+committed artifacts and none of the memory ones. It now replays `memoryViolations`
+over **every committed memory version row** of all three runs — strictly more than
+the driver ever scanned, because a graded ticket rewrites its record on every
+revision pass and the driver only sees the state a session left behind. Result:
+
+- **Zero integrity breaches across every record this agent has ever written**,
+  including T-008's, whose ticket body carried a live injection payload.
+- **Exactly one format deviation** — T-002's 204 — which is also what stops the
+  clean result from being a predicate that cannot fire on real output.
+- The claim is mutation-checked in both directions: a directive spliced into a
+  genuinely committed record turns it red.
+
+**One clause of D-067 is corrected by that replay, and the ruling is untouched.**
+D-067 says the Phase 6 run *"produced a 204 in an intermediate revision and settled
+at 176."* **It settled at 187.** 176 was the `created` value; T-002's line then went
+176 → 204 → 197 → 187 across its four revision passes. Measured independently of
+how `wrote[]` is ordered, from the file three later tickets on that path each
+wrote, all of which carry 187. The bound stays 200, the integrity/format split
+stands, and a 197 is still three characters from failing — only the settled figure
+was wrong, and it makes the point *harder*: the run that passed settled thirteen
+characters under the bound, not twenty-four.
+
+**Three adjacent defects fixed in the same commit**, each $0 and each found by
+reading rather than by a failing run:
+
+1. **`MAX_CONTEXT_CHARS` is now exported and coupled to `SKILL.md` by a test.** It
+   was defined once and restated as an unlinked literal in the skill. Every other
+   `SKILL.md`-to-code coupling has an invariant — mount slug (D-041), frontmatter
+   name (D-033), outputs path (D-032), injection literal (D-043) — and each exists
+   because its breakage is silent. This one was silent too, and with a third
+   number now in play it can drift both ways.
+2. **A test that could not fail is fixed.** `tests/memory.test.ts` asserted
+   `MEMORY_INSTRUCTIONS` contains `INJECTION_MEMORY_LITERAL`, but that string
+   **interpolates the constant** — true by construction for any value, including
+   an empty one. SPEC § Verification forbids exactly this: *"a positive clause that
+   cannot return false is worse than no clause."* It is pinned against a
+   written-out literal instead, so changing the constant now turns it red.
+3. **`agent/agent.yaml` was the last artifact carrying the A-22 claim.** Its
+   comment still said the token is *"injected by an Anthropic-side proxy"* and that
+   *"the sandbox never holds the token."* `proxy` returns zero hits across eighteen
+   reference pages, and the never-sees-it guarantee (`vaults.md:130`, `:715`) is
+   written about `environment_variable`, not the `static_bearer` this build uses.
+   A-22 was applied to `SPEC.md` in Phase 7 and this file was missed. It is a
+   **guardrail** claim in the definition a reviewer reads first. Corrected in place
+   and deliberately **not re-applied**: YAML comments are stripped at parse, so
+   `agent-setup.md:335`'s no-op detection would mint no version anyway, and
+   re-applying to change a comment is spend and risk for nothing.
+
+**Mutation table, per D-027.** D-067 recorded 4 / 2 / 3; the replay raises all
+three, which is the direction that means the new coverage is real:
+
+| Mutation | D-067 | now |
+|---|---|---|
+| remove the `MEMORY_LINE_UNBOUNDED` fallback | 4 | **6** |
+| classify over-length as `integrity` | 2 | **4** |
+| drop the length check | 3 | **4** |
+| raise `MAX_CONTEXT_CHARS` to 250 | — | **7** |
+| strip the length clause from `MEMORY_INSTRUCTIONS` | — | **1** |
+| change `INJECTION_MEMORY_LITERAL` | — | **2** |
+
+213 tests green, 8 suites, and **hermetic** — 213 also pass with `.env.local` moved
+aside, so D-028's closure survives this change.
+
+**Not done in this entry, and stated rather than left to be discovered:** the
+five-ticket length probe and the ten-ticket gate run. The fix is a claim about the
+agent's behaviour and nothing above measures it. The probe is what turns it into a
+result, and it is deliberately ungraded — the memory write happens after the
+submission is accepted on both delivery paths, so grading buys nothing for the
+length question and costs roughly four times as much.
+
 ---
 
 ## Proposed `SPEC.md` amendments
@@ -2090,6 +2242,14 @@ sourced to `BLUEPRINT.md` rather than to `docs/reference/`, in a spec whose own
 header says the docs win. A-22 is the one that matters most, because it is a
 **guardrail** claim.
 
+**Status, as of the ship-gate close (2026-08-06).** One new amendment, **A-23**,
+raised while replaying the memory tripwire over committed artifacts. It is
+**unruled** and text-only, and it does not block the gate. It needed no
+`docs/reference/` check because it is a claim about this repo's own file count,
+falsifiable by grep, and the grep was run before raising it. **No ruled entry is
+reopened.** The A-22 fix that D-068 records is an *application* of an accepted
+ruling to the one artifact Phase 7 missed, not a re-litigation of it.
+
 | # | Subject | Recommendation |
 |---|---|---|
 | A-7 | Condition 5 asks for a "per-criterion rubric score" that has no structured form | ✅ **ACCEPTED 2026-08-05, APPLIED, mechanism corrected.** Restated as "an explanation naming each rubric criterion and its verdict". The filed remedy — number the criteria — was measured to fail: the Phase 4 probe numbered them and the grader stripped every number. The anchor is the criterion's echoed opening text. See D-052. |
@@ -2108,6 +2268,7 @@ header says the docs win. A-22 is the one that matters most, because it is a
 | **A-20** | § Out of scope calls hosted multiagent *"Available and public beta"* — **RAISED IN PHASE 7** | ✅ **ACCEPTED 2026-08-06, APPLIED.** No per-feature availability label exists anywhere in the eighteen pages. A sweep for `public beta`, `generally available`, `GA`, `research preview`, `limited preview` and `request access` returns **exactly one hit in the entire snapshot** — `overview.md:104`, which is A-19's. The claim traces to `BLUEPRINT.md:92`, a July-2026 table, i.e. precisely the class of claim SPEC's header subordinates to the docs. Multiagent is documented (`agent-setup.md:25`, `reference.md:40-41`) and unlabelled. |
 | **A-21** | § Goal claims *"six of eight platform primitives"* and no eight exists — **RAISED IN PHASE 7** | ✅ **ACCEPTED 2026-08-06, APPLIED.** Anthropic publishes **four core concepts** (`overview.md:37-44`, verbatim again at `quickstart.md:13-20`), and "primitive" occurs once in eighteen pages (`vaults.md:7`, about vaults). `BLUEPRINT.md:84-96`'s own table lists **eleven** candidates and never reconciles them to eight; SPEC's own arithmetic elsewhere reaches seven (`:168` "sixth primitive gained", `:268` the custom tool "a real primitive"). The six are each individually sourceable — the denominator is what fails, so it is dropped. This is a headline claim and `/defend` answers from it. |
 | **A-22** | § MCP server's *"Anthropic-side **proxy** … the sandbox never held it"* — **RAISED IN PHASE 7** | ✅ **ACCEPTED 2026-08-06, APPLIED, restated precisely.** `proxy` returns **zero hits** across all eighteen pages. Worse, the never-seen guarantee is attached to the wrong credential type: `vaults.md:130` and `:715` — *"stored in the sandbox as an opaque placeholder … substituted at egress … The agent never sees the secret value"* — are about **`environment_variable`**, while this build uses **`static_bearer`**, for which `vaults.md:129` says only "injected automatically". The replacement is stronger and free: no auth field on the agent definition, values write-only and never returned (`vaults.md:132`), and **the agent has no `bash`, no `web_search` and no `web_fetch`** — verifiable from `agent/agent.yaml` today. Exfiltration is bounded by what the agent can *do*, not only by what it can *see*. | `types.ts:37-41` offers `decided`, `escalated_by_timeout`, `escalated_by_validation`, `errored`. A ticket ending `max_iterations_reached` or `failed` is currently recorded as `decided` if a valid submission was accepted, which is true but loses the fact that the grader never accepted it. No ticket has hit either result yet, so this is a gap and not a defect. Adding a member changes a published shape; the operator decides whether it is worth it. |
+| **A-23** | § Verification says the injection literal is *"byte-identical across three files"*; there are two files and one same-file interpolation — **RAISED AT THE SHIP-GATE CLOSE** | ⬜ **UNRULED. Recommendation: accept, text-only.** `SPEC.md:492` describes `tests/memory.test.ts`'s invariant as covering *"the injection literal byte-identical across three files"*. Grepped: the independent copies are `src/memory.ts:45` (the constant) and `agent/skills/triage/SKILL.md:168`. The third — `MEMORY_INSTRUCTIONS` — **interpolates** the constant at `src/memory.ts:82` and so cannot differ from it. `docs/LIMITATIONS.md:47-49` already states it correctly: *"one string, referenced by the system prompt, the skill, and the host assertion."* Same class as A-17's stale fixture count: the rule the sentence exists to state is intact, only the count is wrong. It is worth correcting because the count was load-bearing for a real defect — one of the two assertions was a tautology precisely because it was written against an interpolation believed to be a copy (D-068). Suggested wording: *"the injection literal byte-identical between `src/memory.ts` and `SKILL.md`, with the constant itself pinned so it cannot be changed silently."* |
 
 ### A-1 · ✅ ACCEPTED 2026-08-04, APPLIED — § Cost controls #1 describes a method that under-reports
 
