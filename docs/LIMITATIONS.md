@@ -249,6 +249,20 @@ at the pinned model's rates. For an ungraded run on a pinned model that is exact
 for a graded run it is a bracket, and the **ceiling** is quoted, because the floor
 of a 5× Haiku-to-Opus spread is not an estimate.
 
+**The bracket has been checked against the Console twice, and it held both times —
+but only as a bracket.** Observed spend was **69%** of the derived ceiling on the
+first check and **91%** on the second. **Where inside the bracket the truth falls
+is not predictable**, and an inference from the first reading — that the grader is
+billed near Haiku rates — was withdrawn when the second contradicted it; it had
+rested on `list_cost`, which is the field this same section disqualifies. So the
+ceiling is a genuine upper bound and nothing finer than that is claimed. Budgeting
+on the floor, or on a predicted position between floor and ceiling, would have
+under-provisioned the ship-gate run. See D-069 and its correction.
+
+**The grading model is still unattributed**, which is why the bracket exists at
+all: no usage block carries a model identifier and no reference page names the
+grader's model.
+
 **Spend is no longer structurally bounded.** Through Phase 6 the workspace
 carried a **$5 hard limit** — requests were refused at the cap and a
 workspace-scoped key could not reach the rest of the balance. The operator

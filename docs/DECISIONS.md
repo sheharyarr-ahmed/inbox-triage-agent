@@ -2331,6 +2331,56 @@ remains the honest thing to quote when deciding whether to spend. What changed i
 that the ceiling is now *known* to be conservative rather than merely intended to
 be.
 
+### D-069 · CORRECTED the same day by a second cross-check
+
+**A second reading contradicts the inference above, and the inference is
+withdrawn.** Console credits read **$7.37** after this session's three live runs,
+against **$9.13** before them.
+
+| | observed | derived ceiling | observed as % of ceiling |
+|---|---|---|---|
+| first cross-check (above) | $1.25 | $1.82 | **69%** |
+| **second cross-check** | **$1.76** | **$1.94** | **91%** |
+
+Derived bracket for the three runs — `probe1 $0.2402` exact (ungraded, so floor
+and ceiling coincide), `probe2 $0.1558..$0.2979`, `gate $0.7207..$1.4012` —
+totals **$1.1167 .. $1.9393**. The observed $1.76 lands **inside it, at 78% of the
+way from floor to ceiling.**
+
+**What survives, and it is the half that matters.** The bracket contained the true
+figure **both times**. That is the only property `--budget` depends on, and it now
+has two independent confirmations rather than one.
+
+**What is withdrawn.** The claim that *"the grader is billed at approximately
+Haiku rates, not a premium tier."* Implied grader spend here is **$0.8489**
+against a derived grader bracket of $0.2056 .. $1.0283 — nowhere near the Haiku
+floor. The inference rested on a single session whose `list_cost` read `7` against
+$0.0664 priced at Haiku, and **D-047 had already established that `list_cost` is
+not safe to reason from.** Using it to settle a question it had been disqualified
+from answering is the error, and it is recorded rather than quietly deleted
+because the reasoning was published in a commit message.
+
+**And the practical prediction it produced was wrong.** "The gate run likely costs
+~$1.06 actual" was stated from the 46% figure. The gate ran at close to its
+ceiling. Anyone sizing `--budget` from the *position within* the bracket would
+have under-provisioned.
+
+**Why the two disagree is not established, and three candidates are left open
+rather than one chosen.** The first window is the weaker measurement: its $1.82
+was a sum of ceilings across three Phase 7 attempts, two of them the void
+concurrent runs of D-066, and no per-run confirmation exists that those figures
+were complete. The grading model may not be fixed. And the grader share is derived
+by subtraction from `session.usage` (D-017), so an error there moves the floor and
+the ceiling together.
+
+**The operative rule is unchanged and is now better evidenced than before.**
+SPEC § Cost controls and A-1 both say quote the **ceiling**. Two measurements now
+support that from opposite directions — once because the ceiling bounded a much
+lower actual, once because the actual came within 10% of it. **Do not budget on
+the floor, and do not budget on a predicted position within the bracket.**
+
+Headroom after this session: **$7.37**.
+
 **One thing the Console-side assistant got wrong, recorded because the error shape
 is the point.** Asked what the session header's `input/output` figure means, it
 answered that the number "may reflect effective/billed tokens rather than raw",
