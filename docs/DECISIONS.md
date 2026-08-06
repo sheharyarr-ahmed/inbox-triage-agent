@@ -2183,12 +2183,53 @@ three, which is the direction that means the new coverage is real:
 213 tests green, 8 suites, and **hermetic** — 213 also pass with `.env.local` moved
 aside, so D-028's closure survives this change.
 
-**Not done in this entry, and stated rather than left to be discovered:** the
-length probe and the ten-ticket gate run. The fix is a claim about the agent's
-behaviour and nothing above measures it. The probe is what turns it into a result,
-and it is deliberately ungraded — the memory write happens after the submission is
-accepted on both delivery paths, so grading buys nothing for the length question
-and costs roughly four times as much.
+**MEASURED. The fix works.** Ten tickets, ungraded, `--label phase-8-probe`,
+**$0.2402** derived and exact (no grader, pinned model).
+
+| | before | after |
+|---|---|---|
+| range across ten | 62–204 committed, **237** in attempt 3 | **84–165** |
+| mean | ~150 | **116** — the instructed target is 120 |
+| over the 200 bound | one committed, plus the 237 that halted a run | **zero** |
+| tripwire | halted the run at ticket six of ten | **clean across all ten** |
+
+The three tickets that caused it: **T-002 204 → 138**, **T-003 177 → 106**,
+**T-006 237 → 128**. Every memory gate passed — mount path read not constructed,
+no write outside the mount, four handoffs attributed to their own sessions, the
+memory-exclusive token carried by T-010←T-001, and T-008 recording only the fixed
+literal.
+
+**The ungraded probe failed two gates, and neither survived contact with the
+graded path.** Recorded because the first reading of both was wrong.
+
+*T-004 and T-005 promised uncited figures* — `T-004:5`, `T-005:89,ORD-4201`.
+**Character-for-character identical to D-039**, which measured exactly those two
+tickets and those figures in Phase 4. Not a regression: D-062 measured them clean
+across all ten in Phase 6, and attributed that to rubric criterion 4. The ungraded
+path has no criterion 4. This is the same finding arriving from the other side.
+
+*T-009 submitted with `citations: []`* — and that one had no ready explanation,
+because Phase 4 was ungraded too and carried the citation. Three candidates that a
+single run cannot separate: the new instruction bleeding brevity into citations; a
+v4→v5 difference never tested on the ungraded path, since Phase 5 ran two tickets
+and neither was T-009; or the run-to-run variance D-053 measured on this agent.
+
+**Settled by measurement rather than argument, for $0.1558–$0.2979.** A graded
+three-ticket probe on exactly the failing tickets — `--label phase-8-probe2`,
+`--max-iterations 2` — returned **GATES MET on all fifteen**. T-009's citation is
+back (`lookup_account.found=false`), uncited figures are clean, four evaluations
+carried results and explanations, two `satisfied` at 5/5, criterion 3's guard held,
+and `escalated_by_iteration_cap` fired on T-004.
+
+**And it answered the one question the ungraded probe structurally could not.**
+Phase 6's over-length records came from revision cycles — T-002's line went
+176 → **204** → 197 → 187 across four passes — so first writes alone prove nothing
+about the graded gate run. T-004 exhausted the cap here, revising twice, and its
+record still came out at **108**. The other two: 98 and 77. **Revisions no longer
+push lines long**, and the tripwire was clean on that path too.
+
+Both probes are committed on D-021's precedent, alongside the Phase 4 and Phase 6
+probes that set it.
 
 ### D-069 · The spend cross-check, taken for the first time, and it passes
 
