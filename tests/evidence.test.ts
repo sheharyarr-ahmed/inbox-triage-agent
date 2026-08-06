@@ -142,6 +142,34 @@ describe("docs/EVIDENCE.md — SPEC ship-gate condition 6", () => {
     expect(shots.some((s) => s.includes("criterion"))).toBe(true);
   });
 
+  it("and those four files EXIST, and are real images", () => {
+    // This assertion could not be written until the captures existed, and its
+    // absence was a real hole: the check above reads four FILENAMES out of a
+    // markdown table, so it passed for the whole of Phase 7 while
+    // `docs/evidence/screenshots/` did not exist at all. Ship-gate condition 6
+    // was mechanically green and objectively unmet at the same time.
+    //
+    // The trace-file assertion five tests above has always called `existsSync`
+    // (`:102`). This is the same discipline applied to the other artifact class.
+    //
+    // The PNG magic number and a size floor are what stop a touched placeholder
+    // from satisfying it. A 0-byte `t-006-escalation.png` would otherwise close
+    // the last open ship-gate condition.
+    const shots = [...new Set(doc.match(/screenshots\/[a-z0-9-]+\.png/g) ?? [])];
+    const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+    for (const shot of shots) {
+      const path = join(EVIDENCE_DIR, shot.replace(/^screenshots\//, "screenshots/"));
+      expect(existsSync(path), `${shot} is required by assertion 6 but missing`).toBe(true);
+
+      const bytes = readFileSync(path);
+      expect(bytes.subarray(0, 8).equals(PNG_MAGIC), `${shot} is not a PNG`).toBe(true);
+      // A Console screenshot is hundreds of kB. 10 kB rules out a placeholder
+      // without pinning a resolution the next capture has to match.
+      expect(bytes.byteLength, `${shot} is too small to be a real capture`).toBeGreaterThan(10_000);
+    }
+  });
+
   it("gives a resolvable Console URL for every screenshot", () => {
     const urls = doc.match(/https:\/\/platform\.claude\.com\/workspaces\/[^\s`)]+/g) ?? [];
     // Base + one per capture. Each must carry a real session id.
