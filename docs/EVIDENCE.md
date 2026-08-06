@@ -20,7 +20,17 @@ requires, on every turn.
 
 **Run documented here:** the Phase 6 ten-ticket graded acceptance run
 (`--outcome all`, `max_iterations: 3`, agent v5, rubric
-`file_011CdjL8WsMZFQKo7iTQM6MG`). Files are `docs/evidence/phase-6-*`.
+`file_011CdjL8WsMZFQKo7iTQM6MG`). Files are `docs/evidence/phase-6-*`. The four
+Console screenshots are of these sessions, which is why this document stays on
+them.
+
+**Independently reproduced 2026-08-06 by the ship-gate run**, same agent version
+and rubric, `--label phase-7`: **31 of 31 gates, zero failures**, files at
+`docs/evidence/phase-7-*`. Every condition below held again on a second
+ten-ticket run — T-006 escalated, T-008 refused and flagged, the T-001 → T-010
+handoff carried the memory-exclusive token, 21 evaluations with 8 `satisfied` at
+5/5, and the highest `iteration` was 2. Two runs is not stability (see
+`docs/LIMITATIONS.md` § 7), but nothing here rests on a single execution.
 
 **Console links.** The trace URL is constructed from the workspace id —
 `docs/reference/` documents no URL format at all (see `docs/LIMITATIONS.md` § 9)

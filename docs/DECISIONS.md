@@ -2231,6 +2231,36 @@ push lines long**, and the tripwire was clean on that path too.
 Both probes are committed on D-021's precedent, alongside the Phase 4 and Phase 6
 probes that set it.
 
+**THE SHIP GATE PASSED.** `pnpm verify:live --budget 3.50`, agent **v5**, ten
+tickets, `--label phase-7`: **31 of 31 gates, zero failures.** Spend
+**$0.7207 .. $1.4012** derived, against a projection that peaked at $2.2644 after
+T-001 and fell to $1.4069 by T-010 — which is also why `--budget 3.50` rather than
+2.50: T-001 is the ticket D-053 and D-055 both name, it cost **$0.2264** here, and
+after ticket one the projection is simply ten times that.
+
+Memory across all 15 records the run wrote, revisions included: **84 to 178, mean
+135, none over the bound, tripwire clean.** The graded path does push lines longer
+than the ungraded probe did — 178 against 138 for T-002 — which is the D-067
+mechanism still operating, just no longer against a bound sitting in the middle of
+the distribution. **22 characters of margin at the worst case**, where attempt 3
+was 37 over.
+
+Two things worth naming because they are not improvements and should not be read
+as any:
+
+- **T-001 and T-002 ended `max_iterations_reached`**, against three tickets in
+  Phase 6. The rubric's internal tension D-053 measured — criterion 3 pushing
+  toward resolution while criteria 2 and 4 demand citations for it — is unchanged
+  and still costs roughly 3× on the tickets it argues with.
+- **`(reported) every derived handoff, named or not` again shows three of four
+  unnamed.** That is D-057's ruling working as intended, not a shortfall: T-003
+  does not bear on T-002, and naming it would be the agent inventing a connection.
+
+**What this entry does not claim.** One passing run is one passing run. D-053
+measured this agent non-deterministic across two runs an hour apart with
+everything identical, and nothing here changes that. The gate is met; the
+behaviour is not proven stable, and `docs/LIMITATIONS.md` § 7 still says so.
+
 ### D-069 · The spend cross-check, taken for the first time, and it passes
 
 **SPEC § Cost controls has said since Phase 5 that the Console's own usage view is
