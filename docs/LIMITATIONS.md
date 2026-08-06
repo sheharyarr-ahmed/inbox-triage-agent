@@ -268,7 +268,7 @@ constraint on any adaptation of it to genuine customer records.
 ## 6. What the offline test suite does and does not prove
 
 `pnpm -s test` is offline, zero spend, no network, and now hermetic — it runs
-from a clean clone with no `.env.local` (D-028, closed in Phase 7). 213 tests.
+from a clean clone with no `.env.local` (D-028, closed in Phase 7). 218 tests.
 
 **The unknown-event claim is narrower than it reads.** The SDK filters incoming
 SSE frames against a hardcoded allowlist of event names
@@ -377,6 +377,23 @@ The trace URLs in this repo are **constructed** from the workspace ID and were
 verified against the Console address bar rather than against a document (D-019).
 The `?event=<sevt_id>` deep-link form was measured the same way. Both work; both
 are undocumented, and could change without notice.
+
+**The Debug tab and the export control were measured on 2026-08-06 (D-070), and
+one of them changed a claim this repo could make.** The export produces
+`session-events-<session_id>.json`, a flat JSON array of the session's stored
+events. Compared against `docs/evidence/phase-6-T-010.jsonl`, captured live by
+`src/events.ts`: **70 of 70 shared events byte-identical, nothing the platform
+kept was missed** — which is the first independent evidence that the SSE consumer
+captures the complete stream rather than most of it. And the captured trace holds
+**seven events the platform's own export does not**, all of them `session.usage`,
+the type that is absent from the SDK's TypeScript union (D-035) and carries
+`list_cost` (D-034). It is emitted on the live stream and not kept in the stored
+record.
+
+Both surfaces remain **undocumented**: the export's format, its scope, and
+whether that stream-only behaviour is deliberate are all unsourced, measured on
+one session, and could change without notice. `tests/assertions.test.ts` holds
+the comparison so a change is caught rather than assumed.
 
 Access is role-gated: *"Tracing views are only accessible to Developers and
 Admins"* (`events-and-streaming.md:2728`). This account's role is Admin, which is

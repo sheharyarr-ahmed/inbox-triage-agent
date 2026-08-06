@@ -2184,11 +2184,108 @@ three, which is the direction that means the new coverage is real:
 aside, so D-028's closure survives this change.
 
 **Not done in this entry, and stated rather than left to be discovered:** the
-five-ticket length probe and the ten-ticket gate run. The fix is a claim about the
-agent's behaviour and nothing above measures it. The probe is what turns it into a
-result, and it is deliberately ungraded — the memory write happens after the
-submission is accepted on both delivery paths, so grading buys nothing for the
-length question and costs roughly four times as much.
+length probe and the ten-ticket gate run. The fix is a claim about the agent's
+behaviour and nothing above measures it. The probe is what turns it into a result,
+and it is deliberately ungraded — the memory write happens after the submission is
+accepted on both delivery paths, so grading buys nothing for the length question
+and costs roughly four times as much.
+
+### D-069 · The spend cross-check, taken for the first time, and it passes
+
+**SPEC § Cost controls has said since Phase 5 that the Console's own usage view is
+the independent check on every derived figure here, and that it had never been
+taken.** Taken 2026-08-06, by the operator, before any Phase 8 spend.
+
+| | |
+|---|---|
+| Console credits, 2026-08-05, after Phase 6 (D-019) | $10.38 |
+| Console credits, 2026-08-06, before this session spent anything | **$9.13** |
+| **Platform-observed spend between the two** | **$1.25** |
+| **This repo's derived figure for the same period** | **~$1.82** |
+
+**The derivation over-reports by $0.57 — 46% high — and that is the direction it is
+built to err in.** `src/cost.ts` prices the grader's share at the Opus 5 ceiling
+because D-017 established there is no model attribution on either usage block, and
+A-1 ruled that where a bracket is printed its **ceiling** is what gets quoted. This
+is the first evidence from outside the build that the bracket actually contains the
+true figure. D-034 had suspected as much from the other direction — pricing
+`session.usage` at Haiku rates reproduced `list_cost` closely, implying the grader
+is not billed at a premium tier — but that inference rested on a field D-047 then
+proved unstable.
+
+**The failure this rules out is the one that mattered.** Had the Console shown
+*less* than $8.56, the derivation would have been under-reporting and every
+`--budget` figure in the repo would be set against a number smaller than reality —
+a bound that does not bind. SPEC's rule is *"if it disagrees with the derivation it
+is the derivation that is wrong"*, and a ceiling sitting above observed spend is
+not a disagreement.
+
+**Nothing changes about how spend is measured.** The derivation stays
+authoritative, `list_cost` stays captured and unused (D-047), and this figure is a
+witness taken once. Two limits, stated so it is not leant on harder than it holds:
+the Console credits figure is **organization-level** and D-019 already flagged that
+org credits and workspace usage are different meters; and the comparison assumes
+nothing outside this build spent API credits in the window, which is an operator
+statement rather than a measurement.
+
+**Consequence for Phase 8:** real headroom is **$9.13**, not the $8.56 this session
+opened by quoting.
+
+### D-070 · The Console export, and the seven events it does not contain
+
+**D-019 recorded that a `Debug` tab and an export control exist beside
+`Transcript`, that neither had been used, and asked that Phase 7 evaluate them
+"before hand-building anything the Console already emits." Phase 7 did not. This
+is that evaluation.**
+
+The Debug tab renders the event stream with type badges that match this repo's
+JSONL exactly — `agent.tool_use`, `span.model_request_end`, `session.thread_status_idle` —
+a per-event inspector with `Rendered` / `Raw` / `Deltas`, inline token counts on
+`span.model_request_end`, and a session-level `input/output` figure in the header.
+The export control produces `session-events-<session_id>.json`: a flat JSON array,
+no wrapper object, downloaded without a save dialog.
+
+**It answers a question this build could not otherwise answer.** SPEC ship-gate
+condition 1 is *"a session … streams events through your own SSE consumer"*, and
+`tests/events.test.ts` proves the consumer handles the shapes correctly — which is
+a different claim from **completeness**, and completeness cannot be checked against
+a trace the consumer itself wrote. Compared against
+`docs/evidence/phase-6-T-010.jsonl`:
+
+- **70 of 70 shared events byte-identical** after JSON normalisation. Zero drift.
+- **Nothing the platform kept was missed.** Not one id present there and absent here.
+- **The captured trace holds SEVEN events the export does not**, and they are all
+  one type: **`session.usage`**.
+
+That last line is the finding. `session.usage` is absent from the SDK's TypeScript
+union (D-035), reaches the consumer through the unknown-event branch D-023 was
+careful to describe modestly, and carries `list_cost` (D-034). **It is emitted on
+the live stream and not kept in the stored record.** So a build that had read the
+stored events instead of consuming the stream would hold **no platform cost
+telemetry at all** — the unknown-event handling turns out to be load-bearing for a
+second time, and for the same event.
+
+**The export does not replace the consumer and is not offered as evidence that it
+could.** Writing the consumer is the graded requirement. What the export is worth
+is corroboration, and one piece of it is worth stating on its own: **the memory
+read that proves ship-gate condition 4 is present in Anthropic's own exported
+record**, carrying `- T-001 | refund-request | escalate | …` verbatim. Condition 4
+no longer rests solely on a file this repo wrote about itself.
+
+Committed as `docs/evidence/phase-6-T-010-console-export.json` on D-021's
+precedent — a real artifact, promoted byte-for-byte, never mixed with anything
+hand-built — and `tests/assertions.test.ts` now holds the comparison, so the
+one-time manual check became a gate that runs on every Stop hook for $0.
+Mutation-checked per D-027: dropping one event the platform kept fails **2**,
+corrupting one byte inside a shared event fails **1**, and stripping the
+`session.usage` events fails **1**.
+
+**Stated limits.** One session, one export, on a surface documented in **zero** of
+the eighteen reference pages. Whether the stream-only behaviour of `session.usage`
+is deliberate is unsourced, and the export's scope under a non-default `All events`
+filter was not tested. The test asserts the extra types as an exact set rather than
+a count, so an export that starts including them turns red and gets read rather
+than silently absorbed.
 
 ---
 

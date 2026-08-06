@@ -441,3 +441,90 @@ describe("the memory tripwire, replayed over every record this agent has committ
     expect(nearBound.length / all.length).toBeGreaterThan(0.25);
   });
 });
+
+/**
+ * THE SSE CONSUMER, CHECKED AGAINST ANTHROPIC'S OWN RECORD OF THE SAME SESSION.
+ * D-069.
+ *
+ * SPEC ship-gate condition 1 is *"a session … streams events through your own SSE
+ * consumer"*, and until now nothing could show that consumer captured the whole
+ * stream rather than most of it. `tests/events.test.ts` proves it handles the
+ * shapes correctly; that is a different claim from completeness, and completeness
+ * is not checkable against a trace the consumer itself wrote.
+ *
+ * The Console's session Debug tab has an export control. It is documented in
+ * ZERO of the eighteen pages in `docs/reference/` — D-019 recorded its existence
+ * and asked that it be evaluated before anything is hand-built, and this is that
+ * evaluation. `phase-6-T-010-console-export.json` is what it produced for
+ * `sesn_01DVbEycPKoKKejXhKpkBCEV`, committed byte-for-byte on D-021's precedent.
+ *
+ * It does NOT replace the consumer — writing the consumer is the graded
+ * requirement. It is a witness, and it turns a one-time manual check into a gate
+ * that runs on every Stop hook for $0.
+ */
+describe("our captured trace against the Console's own export of the same session", () => {
+  type Ev = { id: string; type: string };
+  const exported = JSON.parse(
+    readFileSync(join(EVIDENCE, "phase-6-T-010-console-export.json"), "utf8"),
+  ) as Ev[];
+  const captured = readFileSync(join(EVIDENCE, "phase-6-T-010.jsonl"), "utf8")
+    .split("\n")
+    .filter((l) => l.trim() !== "")
+    .map((l) => JSON.parse(l) as Ev);
+
+  const byId = (xs: Ev[]) => new Map(xs.map((e) => [e.id, e]));
+
+  it("both artifacts describe the same session and neither is empty", () => {
+    expect(exported.length).toBeGreaterThan(0);
+    expect(captured.length).toBeGreaterThan(0);
+    expect(new Set(exported.map((e) => e.id)).size).toBe(exported.length);
+  });
+
+  it("captured EVERY event the platform kept — nothing was dropped", () => {
+    // The completeness half. A consumer that silently skipped a frame would show
+    // up here as an id the platform has and we do not.
+    const ours = byId(captured);
+    const missing = exported.filter((e) => !ours.has(e.id)).map((e) => `${e.type} ${e.id}`);
+    expect(missing).toEqual([]);
+  });
+
+  it("and agrees with it byte-for-byte on every shared event", () => {
+    // The fidelity half. Same ids is not the same as same content: a consumer
+    // that reassembled a streamed event wrongly would pass the check above.
+    const theirs = byId(exported);
+    const drifted = captured
+      .filter((e) => theirs.has(e.id))
+      .filter((e) => JSON.stringify(e) !== JSON.stringify(theirs.get(e.id)))
+      .map((e) => `${e.type} ${e.id}`);
+    expect(drifted).toEqual([]);
+  });
+
+  it("and holds MORE than the platform's record — session.usage is stream-only", () => {
+    // The finding that makes the consumer load-bearing rather than merely correct.
+    // `session.usage` is absent from the SDK's TypeScript union (D-035) and is the
+    // event carrying `list_cost` (D-034). It is also absent from the platform's
+    // own export: emitted on the live stream, not kept in the stored record.
+    //
+    // So a build that had read the stored events instead of consuming the stream
+    // would hold no platform cost telemetry at all. Asserted as an exact type set,
+    // not a count, so a future export that starts including them fails here and
+    // gets read rather than silently absorbed.
+    const theirs = byId(exported);
+    const extraTypes = [
+      ...new Set(captured.filter((e) => !theirs.has(e.id)).map((e) => e.type)),
+    ];
+    expect(extraTypes).toEqual(["session.usage"]);
+    expect(captured.length).toBeGreaterThan(exported.length);
+  });
+
+  it("independently corroborates the memory handoff, ship-gate condition 4", () => {
+    // The strongest consequence. The read that proves session B received what
+    // session A wrote is present in ANTHROPIC'S OWN exported record, carrying the
+    // memory-exclusive token. Condition 4 no longer rests only on a file this
+    // repo wrote about itself.
+    const result = exported.find((e) => e.id === "sevt_01UpAd872NVeSbrw38nqL7Ge");
+    expect(result).toBeDefined();
+    expect(JSON.stringify(result)).toContain("# ACC-2004");
+    expect(JSON.stringify(result)).toContain("T-001 | refund-request | escalate");
+  });
+});
