@@ -20,6 +20,7 @@
  */
 
 import Anthropic, { toFile, type Uploadable } from "@anthropic-ai/sdk";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -120,10 +121,41 @@ async function main(): Promise<void> {
   // 1. Custom skill — Phase 4.
   // -------------------------------------------------------------------------
   if (env.TRIAGE_SKILL_ID && !newSkillVersion) {
+    // DRIFT GUARD, symmetric with the rubric's at step 4 and added for the same
+    // reason one layer over. Skills are immutable (D-033), so an edited SKILL.md
+    // that never got a new version leaves the agent pinned to the PREVIOUS
+    // document while this command reports "already provisioned" and every live
+    // session measures the old procedure. That is D-050's failure signature and
+    // D-041's silence: a run that looks entirely successful, measuring the wrong
+    // thing, at roughly a dollar a time.
+    //
+    // `scripts/apply-control-plane.sh` does NOT catch it, whatever its comment
+    // says: it compares the agent's applied skill version against `.env.local`,
+    // and in exactly this scenario those two agree.
+    //
+    // Content hash rather than the rubric's `size_bytes`, because it is free
+    // here and it closes the byte-count-preserving edit that guard admits. The
+    // limit is the other way round: this compares local bytes to what was local
+    // when the version was cut, so it catches the accident it exists for and
+    // proves nothing about what the API actually holds. `skills.versions`
+    // exposes no size on retrieve, and the only content route is a zip download
+    // this build has never exercised.
+    const localSha = createHash("sha256").update(readFileSync(SKILL_MD)).digest("hex");
+    if (env.TRIAGE_SKILL_SHA256 && env.TRIAGE_SKILL_SHA256 !== localSha) {
+      throw new Error(
+        `agent/skills/triage/SKILL.md has changed since version ` +
+          `${env.TRIAGE_SKILL_VERSION ?? "(unrecorded)"} was uploaded.\n` +
+          `  recorded sha256 ${env.TRIAGE_SKILL_SHA256}\n` +
+          `  local    sha256 ${localSha}\n` +
+          `Skills are immutable, so the agent is still pinned to the OLD ` +
+          `procedure and a live run would measure that. Re-run with ` +
+          `--new-skill-version to upload the current one.`,
+      );
+    }
     ok(`skill        ${env.TRIAGE_SKILL_ID} (already provisioned)`);
     console.log(
-      `      pinned at version ${env.TRIAGE_SKILL_VERSION ?? "(unrecorded)"}. ` +
-        `Edited SKILL.md? re-run with --new-skill-version`,
+      `      pinned at version ${env.TRIAGE_SKILL_VERSION ?? "(unrecorded)"}` +
+        (env.TRIAGE_SKILL_SHA256 ? `, SKILL.md matches` : `, sha unrecorded — next --new-skill-version records it`),
     );
   } else if (env.TRIAGE_SKILL_ID) {
     // Skills are immutable once uploaded, so an edited SKILL.md needs a new
@@ -136,12 +168,14 @@ async function main(): Promise<void> {
     ok(`skill        ${env.TRIAGE_SKILL_ID} version ${version.version}`);
     console.log(`      uploaded ${names.length} file(s): ${names.join(", ")}`);
     record("TRIAGE_SKILL_VERSION", version.version);
+    record("TRIAGE_SKILL_SHA256", createHash("sha256").update(readFileSync(SKILL_MD)).digest("hex"));
   } else if (!existsSync(SKILL_MD)) {
     skip(
       "skill",
       `agent/skills/triage/SKILL.md does not exist yet. Phase 4 writes the ` +
         `decision procedure, packages this directory, POSTs /v1/skills, then ` +
-        `pins version "1" on the agent.`,
+        `pins the returned version on the agent. Custom skill versions are ` +
+        `epoch-timestamp strings, never "1" — see amendment A-9.`,
     );
   } else {
     const { files, names } = await bundle();
@@ -167,6 +201,7 @@ async function main(): Promise<void> {
     console.log(`      uploaded ${names.length} file(s): ${names.join(", ")}`);
     record("TRIAGE_SKILL_ID", skill.id);
     record("TRIAGE_SKILL_VERSION", skill.latest_version);
+    record("TRIAGE_SKILL_SHA256", createHash("sha256").update(readFileSync(SKILL_MD)).digest("hex"));
   }
 
   // -------------------------------------------------------------------------

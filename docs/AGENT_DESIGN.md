@@ -369,7 +369,7 @@ that also runs `claude`.
 | Question | File |
 |---|---|
 | What is the contract? | `SPEC.md` |
-| Why was this chosen over that? | `docs/DECISIONS.md` — 70 entries with alternatives |
+| Why was this chosen over that? | `docs/DECISIONS.md` — 71 entries with alternatives |
 | What does it not do? | `docs/LIMITATIONS.md` |
 | Show me it working | `docs/EVIDENCE.md` |
 | The decision procedure the agent follows | `agent/skills/triage/SKILL.md` |

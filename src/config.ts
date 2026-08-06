@@ -65,6 +65,9 @@ const Env = z.object({
   // "1759178010641129" (skills-guide.md:50), not the "1" SPEC § Runtime
   // configuration pins. See amendment A-9 in docs/DECISIONS.md.
   TRIAGE_SKILL_VERSION: optionalId(),
+  // Content hash of SKILL.md as uploaded, so `pnpm provision` can refuse to
+  // report "already provisioned" over an edited-but-never-versioned skill.
+  TRIAGE_SKILL_SHA256: optionalId(),
 
   // Deferred to the phase that creates its input artifact.
   RUBRIC_FILE_ID: optionalId(),
@@ -84,6 +87,7 @@ const PRODUCED_BY: Record<OptionalEnvKey, string> = {
   MEMORY_STORE_ID: "Phase 2 — pnpm deploy",
   TRIAGE_SKILL_ID: "Phase 4 — pnpm provision, once agent/skills/triage/SKILL.md exists",
   TRIAGE_SKILL_VERSION: "Phase 4 — pnpm provision, alongside TRIAGE_SKILL_ID",
+  TRIAGE_SKILL_SHA256: "pnpm provision --new-skill-version — the drift guard's baseline",
   RUBRIC_FILE_ID: "Phase 6 — pnpm provision, once agent/rubric.md exists",
 };
 

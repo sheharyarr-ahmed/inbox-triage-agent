@@ -307,6 +307,42 @@ A content comparison would need `files.download`, whose availability depends on
 false`. The deliberate case has `--new-rubric`; the guard only has to catch the
 accident (D-050).
 
+**The control-plane guards check the committed source, not the live resource.**
+`tests/control-plane.test.ts` asserts that `agent/agent.yaml` still enables no
+`bash`, no `web_search` and no `web_fetch`, and that `agent/environment.yaml`
+still sets `allow_mcp_servers: true`. Both are read from the repo. **Neither
+confirms the API actually holds those values** — `scripts/apply-control-plane.sh`
+reads back the agent's MCP permission policy, skill id, skill version and custom
+tool, but pipes the *environment* response to `/dev/null`. So a hand-edit made
+through some other route would pass here (D-071).
+
+**Two remaining gaps in the same family, stated rather than closed.**
+
+- **Nothing verifies `agent.yaml`'s MCP url against `MCP_SERVER_URL`.** The vault
+  credential is keyed by url, and `src/deploy.ts:200-204` records the
+  consequence of a mismatch: normalisation tolerates case and default ports, but
+  a differing path or subdomain does not match, **and an unmatched credential
+  means the connection is attempted UNAUTHENTICATED rather than failing loudly**
+  (`mcp-connector.md:368`). One string in two files, no guard.
+- **The environment apply asserts nothing.** `allow_mcp_servers` is the flag whose
+  absence makes MCP tools fail silently, and the apply discards the response that
+  would confirm it.
+
+Both are cheap to close and neither is closed, because closing them means running
+`apply-control-plane.sh` to exercise the assertion, and a re-apply that turns out
+not to be a no-op would mint agent v6 — diverging from the version every committed
+trace pins. That trade was declined deliberately; it is not an oversight.
+
+**The SKILL.md drift guard compares local bytes, not remote ones.**
+`pnpm provision` records a sha256 of `SKILL.md` when a version is minted and
+refuses to report "already provisioned" when the local file no longer matches
+(D-071). That catches the accident it exists for — an edit that never got a new
+version, which would leave every live run measuring the previous procedure. It
+proves nothing about what the API holds: `skills.versions.retrieve` exposes no
+size, and the only content route is a zip download this build has never
+exercised. It is a stronger guard than the rubric's `size_bytes` in one respect,
+since a byte-count-preserving edit does not pass it, and weaker in another.
+
 **The commit-msg hook is bypassable.** `git commit --no-verify` skips it
 entirely, as does any path that writes a commit object directly. It enforces a
 convention against accident, not against intent (D-060).

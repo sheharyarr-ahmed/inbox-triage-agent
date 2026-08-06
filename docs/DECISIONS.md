@@ -2448,6 +2448,89 @@ filter was not tested. The test asserts the extra types as an exact set rather t
 a count, so an export that starts including them turns red and gets read rather
 than silently absorbed.
 
+### D-071 · The guards that existed for one resource and not its siblings
+
+**Found by auditing before publishing rather than by a failure**, which is the
+cheapest way this build has found anything.
+
+Three artifacts govern what the agent can do — `SKILL.md`, `agent.yaml`,
+`environment.yaml` — and a fourth, `agent/rubric.md`, governs how it is judged.
+The rubric got a drift guard in Phase 6 (D-050) and `SKILL.md` got content
+invariants in Phase 5 (D-048). **The other two had nothing at all**, and
+`SKILL.md` had no guard against the one failure that costs money.
+
+**1. `SKILL.md` could be edited and never re-uploaded, silently.** Skills are
+immutable (D-033), so an edit that never got `--new-skill-version` leaves the
+agent pinned to the PREVIOUS procedure while `pnpm provision` reports "already
+provisioned" and every live session measures the old document. That is D-050's
+failure signature and D-041's silence, at roughly a dollar a run.
+
+**`scripts/apply-control-plane.sh` claims to catch this and does not.** Its
+comment says the parity check fails "an edited SKILL.md that was never given a
+new version"; the code compares the agent's *applied* skill version against
+`.env.local`, and in exactly that scenario the two agree. The comment described
+the check someone meant to write.
+
+`pnpm provision` now records `TRIAGE_SKILL_SHA256` when a version is minted and
+refuses to proceed when the local file no longer matches it. **Content hash rather
+than the rubric's `size_bytes`**, because it is free here and closes the
+byte-count-preserving edit that guard admits. Proven by mutation: a corrupted
+recorded sha makes `pnpm provision` refuse **before any API call**.
+
+The limit is the opposite of the rubric's and is stated in `docs/LIMITATIONS.md`
+§ 6: this compares local bytes to what was local when the version was cut, so it
+proves nothing about what the API holds. `skills.versions.retrieve` carries no
+size, and the only content route is a zip download this build has never run.
+
+**2. Nothing read `agent.yaml` or `environment.yaml`.** `tests/control-plane.test.ts`
+is the ninth suite, and the assertion that earns it is this one: **`bash`,
+`web_search` and `web_fetch` appear nowhere in the toolset.**
+
+`docs/LIMITATIONS.md` § 2 rests its whole credential argument on that sentence,
+because A-22 withdrew the unsourceable never-in-the-sandbox claim and replaced it
+with something checkable: *"Exfiltration is bounded by what the agent can do …
+That is verifiable from the repo today."* **One added line would have made that
+false with nothing anywhere going red.** A claim chosen for being verifiable
+should be verified.
+
+Eight further invariants came free with the file read: the allowlist form itself
+(`default_config.enabled: false`, whose loss inverts the posture SPEC § Runtime
+configuration argues for), the `always_allow` MCP policy (D-012), the pinned skill
+version rather than `latest`, no auth field on `mcp_servers`, the model pin with
+no date suffix, the three `system` guardrails, `config.type: cloud`, and
+`allow_mcp_servers: true`.
+
+Mutation-checked per D-027, five ways: adding `bash` fails **2**; flipping the
+allowlist to a denylist fails **1**; dropping `allow_mcp_servers` fails **1**;
+pinning the skill to `latest` fails **1**; putting a bearer token on
+`mcp_servers` fails **1**. `agent/` restored byte-identical after each.
+
+**3. Two gaps in the same family are recorded and NOT closed**, with the reason.
+Nothing verifies `agent.yaml`'s MCP url against `MCP_SERVER_URL` — and an
+unmatched vault credential means the connection is attempted **unauthenticated**
+rather than failing loudly (`mcp-connector.md:368`). And the environment apply
+pipes its response to `/dev/null`, so `allow_mcp_servers` is never read back off
+the API.
+
+Both are cheap. Closing either means running `apply-control-plane.sh` to exercise
+the assertion, **and a re-apply that turned out not to be a no-op would mint agent
+v6** — diverging from the version every committed trace pins and the one the ship
+gate passed on. The trade was declined deliberately. Shipping an unexercised guard
+would also violate D-027 on the phase that exists to enforce it.
+
+**4. Stale text corrected.** `src/deploy.ts` still told a reader it "pins version
+`"1"` on the agent" — the pre-A-9 literal that A-9 proved is not a value the API
+ever returns. Unreachable branch, but it is a false statement in shipped code that
+`/defend` answers from.
+
+**5. `SPEC.md` § Files was four modules and one directory short.** `memory.ts`,
+`cost.ts`, `env-file.ts`, `smoke-outcomes.ts` and `scripts/` all exist and were
+never listed. Each is a recorded deviation — `src/memory.ts:16-18` flags its own,
+D-016 flags `scripts/` — but § Files is the contract, and A-17 set the precedent
+that a stale enumeration gets corrected rather than defended.
+
+**230 tests across 9 suites**, still hermetic.
+
 ---
 
 ## Proposed `SPEC.md` amendments

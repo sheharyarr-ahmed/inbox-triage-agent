@@ -43,13 +43,19 @@ inbox-triage-agent/
 │   ├── data/accounts.json                 # 5 seeded accounts
 │   ├── data/orders.json                   # seeded orders keyed by account_id
 │   └── vercel.json
+├── scripts/
+│   └── apply-control-plane.sh             # create-vs-update branch for agent + environment (D-016)
 ├── src/
 │   ├── deploy.ts                          # provisions skill, vault + credential, memory store, rubric file
 │   ├── run.ts                             # session-per-ticket driver, wall-clock timeout, gate assertions
 │   ├── events.ts                          # SSE consumer: typed handling, terminal gate, reconnect
 │   ├── grader.ts                          # per-criterion verdicts parsed out of the grader explanation
 │   ├── decision.ts                        # TriageDecision Zod schema + custom-tool handler
-│   ├── assertions.ts                      # pure ship-gate predicates, offline-testable
+│   ├── assertions.ts                      # pure ship-gate predicates + the memory tripwire, offline-testable
+│   ├── memory.ts                          # store I/O, mount path, MEMORY_INSTRUCTIONS (D-042, D-068)
+│   ├── cost.ts                            # derived spend, Haiku..Opus bracket (A-1, D-017)
+│   ├── env-file.ts                        # the single .env.local writer (D-016)
+│   ├── smoke-outcomes.ts                  # Phase 2 outcomes smoke test
 │   ├── config.ts                          # loads and validates resource IDs from env
 │   ├── paths.ts                           # REPO_ROOT + ENV_PATH only; imports nothing (D-028)
 │   └── types.ts
@@ -64,6 +70,7 @@ inbox-triage-agent/
 │   ├── env-file.test.ts                   # .env.local upsert + the D-028 hermeticity guard
 │   ├── assertions.test.ts                 # ship gate replayed over committed phase-6 artifacts, $0
 │   ├── evidence.test.ts                   # docs/EVIDENCE.md carries what condition 6 requires
+│   ├── control-plane.test.ts              # agent.yaml + environment.yaml invariants (D-071)
 │   └── fixtures/                          # 5 files; real and synthetic never share one
 ├── docs/
 │   ├── AGENT_DESIGN.md
@@ -496,7 +503,8 @@ Do not build, do not claim, and record the reason in `docs/LIMITATIONS.md`:
 | `tests/memory.test.ts` | Memory predicates, plus the `SKILL.md` invariants whose removal is silent: the `/mnt/session/outputs/` write (D-032), no hardcoded mount slug (D-041), the frontmatter name matching the upload folder (D-033), and the injection literal byte-identical across three files. |
 | `tests/env-file.test.ts` | `.env.local` is never rewritten with a key dropped or a newline injected. **Plus the D-028 guard:** `env-file.ts` takes its path constant from `paths.ts` and not from the validating module, so this suite — and therefore this gate — runs from a clean clone. |
 | `tests/assertions.test.ts` | **The ship gate rehearsed offline.** Every assertion below is replayed against the committed Phase 6 artifacts for $0, so a live gate run cannot fail because a predicate is wrong. Each predicate is also exercised in both directions; a positive clause that cannot return false is worse than no clause. |
-| `tests/evidence.test.ts` | `docs/EVIDENCE.md` exists and carries what ship-gate condition 6 requires. Assertion 6's mechanical half, checked on every turn instead of at the end. |
+| `tests/evidence.test.ts` | `docs/EVIDENCE.md` exists and carries what ship-gate condition 6 requires, **and the four screenshots it names exist, carry the PNG magic number and are large enough to be real captures.** Assertion 6's mechanical half, checked on every turn instead of at the end. |
+| `tests/control-plane.test.ts` | `agent/agent.yaml` and `agent/environment.yaml` still say what every claim in this repo assumes they say. Chiefly the tool allowlist: **`bash`, `web_search` and `web_fetch` appear nowhere**, which is the whole of `docs/LIMITATIONS.md` § 2's credential argument after A-22 replaced the unsourceable one. Plus the `always_allow` MCP policy (D-012), the pinned skill version rather than `latest`, no auth field on `mcp_servers`, and `allow_mcp_servers: true`, whose absence fails silently. |
 
 **Five fixtures, and the rule is that real and synthetic never share a file.** Three are real traces, promoted byte-for-byte after the run that produced them (D-021's precedent): `session-events.jsonl` (Phase 2, promoted in Phase 3), `memory-handoff-real.jsonl` (Phase 5's T-010), and `grader-revision-real.jsonl` (Phase 6's T-001, the only committed evidence of a partial criterion enumeration). Two are hand-built and labelled as such: `synthetic-events.jsonl` carries the Phase-4 shape — a custom tool call, an idle with `requires_action`, a grader cycle — that the Phase 2 agent version could not emit, and `memory-events.jsonl` carries the memory shapes.
 
