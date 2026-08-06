@@ -2231,6 +2231,46 @@ statement rather than a measurement.
 **Consequence for Phase 8:** real headroom is **$9.13**, not the $8.56 this session
 opened by quoting.
 
+**And the same conclusion arrives independently, from one session's own numbers.**
+`sesn_01DVbEycPKoKKejXhKpkBCEV` (Phase 6 T-010, two grader evaluations) carries
+this `session.usage`, captured live and committed:
+
+```
+input 92 · cache_read 91,999 · cache_creation 18,144 · output 6,876
+list_cost {"amount": "7", "currency": "USD"}
+```
+
+Priced at the **Haiku** rates in `src/cost.ts`, the whole session — agent *and*
+grader, since D-017 established `session.usage` covers both — comes to
+**$0.0664**. The platform's own `list_cost` reads `7`, which on D-047's
+2026-08-05 cents reading is **$0.07**. A **5.2%** gap, i.e. within the platform's
+own rounding to the next cent.
+
+So **the grader is billed at approximately Haiku rates, not a premium tier.**
+D-034 suspected this and D-047 then made `list_cost` unusable as a decision input,
+which left the suspicion unresolved. It is now supported from two directions that
+share no mechanism: an org-level credit delta measured in the Console, and a
+single session's token counts priced at the pinned model's published rates. That
+is *why* the Opus-ceiling derivation runs 46% high — the ceiling assumes a grader
+tier the platform does not charge.
+
+**This does not license dropping the bracket.** No usage block carries a model
+identifier and no reference page names the grading model (D-017), so the ceiling
+remains the honest thing to quote when deciding whether to spend. What changed is
+that the ceiling is now *known* to be conservative rather than merely intended to
+be.
+
+**One thing the Console-side assistant got wrong, recorded because the error shape
+is the point.** Asked what the session header's `input/output` figure means, it
+answered that the number "may reflect effective/billed tokens rather than raw",
+since cached reads bill at a reduced rate. Arithmetic disproves it:
+`92 + 91,999 + 18,144 = 110,235`, and the header for that session reads `110k`,
+with `6.9k` against a raw `output_tokens` of 6,876. **The header is the raw sum,
+unweighted.** The assistant also answered about a different session than the one
+its question named, without saying so. It is a Console convenience, not a source —
+weaker than `docs/reference/`, which SPEC's header already ranks below nothing
+else. Useful for pointing at where to look; never for what is true.
+
 ### D-070 · The Console export, and the seven events it does not contain
 
 **D-019 recorded that a `Debug` tab and an export control exist beside
